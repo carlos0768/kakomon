@@ -1,0 +1,36 @@
+{
+  "name": "kakomon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "過去問分析 → 出題要件定義 → 予想問題生成 → LLM添削 → 弱点分析 (Mastra + Claude)",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "mastra dev",
+    "build": "mastra build",
+    "start": "mastra start",
+    "admin": "node --env-file-if-exists=.env src/cli/admin.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "@mastra/core": "^1.75.0",
+    "@mastra/libsql": "^1.25.1",
+    "@mastra/rag": "^2.6.6",
+    "ai": "^7.0.130",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "mastra": "^1.33.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.3"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}
