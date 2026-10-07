@@ -2,13 +2,14 @@ import { Mastra } from '@mastra/core'
 import { SimpleAuth } from '@mastra/core/server'
 import { VercelDeployer } from '@mastra/deployer-vercel'
 import { LibSQLStore } from '@mastra/libsql'
+import { PostgresStore } from '@mastra/pg'
 import { analystAgent } from './agents/analyst-agent.ts'
 import { coachAgent } from './agents/coach-agent.ts'
 import { extractorAgent } from './agents/extractor-agent.ts'
 import { generatorAgent } from './agents/generator-agent.ts'
 import { graderAgent } from './agents/grader-agent.ts'
 import { reviewerAgent } from './agents/reviewer-agent.ts'
-import { config } from './config.ts'
+import { config, pgSslOption } from './config.ts'
 import { apiRoutes } from './server/routes.ts'
 import { vectorStore } from './tools/vector-search.ts'
 import { analyzeExamWorkflow } from './workflows/analyze-exam.workflow.ts'
@@ -36,15 +37,24 @@ const deployer = process.env.VERCEL ? new VercelDeployer({ studio: true, maxDura
 
 if (config.ephemeralDb) {
   console.warn(
-    '[kakomon] サーバレス環境でローカルファイル DB にフォールバックしています。データは永続化されません。KAKOMON_DB_URL に Turso (libsql://...) と TURSO_AUTH_TOKEN を設定してください。',
+    '[kakomon] サーバレス環境でローカルファイル DB にフォールバックしています。データは永続化されません。KAKOMON_DB_URL に Supabase の接続文字列 (postgresql://...) を設定してください。',
   )
 }
 
 export const mastra = new Mastra({
   agents: { extractorAgent, analystAgent, generatorAgent, reviewerAgent, graderAgent, coachAgent },
   workflows: { ingestExamWorkflow, analyzeExamWorkflow, generateExamWorkflow, gradeAttemptWorkflow, weaknessWorkflow },
-  // ワークフローの suspend/resume 状態・トレースを保持する (ドメイン DB と同じ DB)
-  storage: new LibSQLStore({ id: 'kakomon-storage', url: config.dbUrl, authToken: config.dbAuthToken }),
+  // ワークフローの suspend/resume 状態・トレースを保持する (ドメイン DB と同じ DB)。
+  // Postgres (Supabase) では mastra_* テーブルを初回起動時に自動作成する
+  storage:
+    config.dbDialect === 'postgres'
+      ? new PostgresStore({
+          id: 'kakomon-storage',
+          connectionString: config.dbUrl,
+          ssl: pgSslOption(config.dbUrl),
+          max: config.isServerless ? 3 : 10,
+        })
+      : new LibSQLStore({ id: 'kakomon-storage', url: config.dbUrl, authToken: config.dbAuthToken }),
   vectors: { kakomonVector: vectorStore },
   deployer,
   server: {

@@ -1,10 +1,11 @@
 import { ModelRouterEmbeddingModel } from '@mastra/core/llm'
 import { createTool } from '@mastra/core/tools'
 import { LibSQLVector } from '@mastra/libsql'
+import { PgVector } from '@mastra/pg'
 import { createVectorQueryTool } from '@mastra/rag'
 import { embedMany } from 'ai'
 import { z } from 'zod'
-import { config } from '../config.ts'
+import { config, pgSslOption } from '../config.ts'
 import type { ExtractedExam } from '../schemas/exam.ts'
 
 /**
@@ -16,7 +17,11 @@ import type { ExtractedExam } from '../schemas/exam.ts'
 export const VECTOR_STORE_NAME = 'kakomonVector'
 export const VECTOR_INDEX = 'past_questions'
 
-export const vectorStore = new LibSQLVector({ id: VECTOR_STORE_NAME, url: config.dbUrl, authToken: config.dbAuthToken })
+/** DB 方言に合わせたベクトルストア (Postgres なら pgvector、それ以外は libSQL) */
+export const vectorStore =
+  config.dbDialect === 'postgres'
+    ? new PgVector({ id: VECTOR_STORE_NAME, connectionString: config.dbUrl, ssl: pgSslOption(config.dbUrl), max: config.isServerless ? 2 : 10 })
+    : new LibSQLVector({ id: VECTOR_STORE_NAME, url: config.dbUrl, authToken: config.dbAuthToken })
 
 export function isVectorSearchEnabled(): boolean {
   return Boolean(config.embeddingModel)

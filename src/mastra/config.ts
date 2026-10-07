@@ -15,6 +15,10 @@ export const config = {
   dbAuthToken: process.env.TURSO_AUTH_TOKEN || process.env.KAKOMON_DB_AUTH_TOKEN || undefined,
   /** サーバレス環境 (Vercel) でローカルファイル DB にフォールバックしている場合 true。データは永続化されない */
   ephemeralDb: isServerless() && isLocalFileUrl(process.env.KAKOMON_DB_URL ?? 'file:./kakomon.db'),
+  /** Vercel / Lambda 上で動いているか (接続プール数などの調整に使う) */
+  isServerless: isServerless(),
+  /** DB 方言。postgres:// / postgresql:// なら Postgres (Supabase 等)、それ以外は libSQL */
+  dbDialect: (/^postgres(ql)?:\/\//i.test(process.env.KAKOMON_DB_URL ?? '') ? 'postgres' : 'libsql') as 'postgres' | 'libsql',
   /** ベクトル検索用の埋め込みモデル (未設定なら無効) */
   embeddingModel: process.env.EMBEDDING_MODEL,
   /** 管理者 API を保護するトークン (未設定なら未保護: ローカル開発用) */
@@ -29,6 +33,27 @@ function isServerless(): boolean {
 
 function isLocalFileUrl(url: string): boolean {
   return url.startsWith('file:') || url === ':memory:'
+}
+
+export function isPostgresUrl(url: string): boolean {
+  return /^postgres(ql)?:\/\//i.test(url)
+}
+
+/**
+ * node-postgres 用の ssl オプション。
+ * ローカル (localhost) や sslmode=disable では無効、それ以外 (Supabase 等のマネージド PG) では
+ * TLS を使い、証明書は検証しない (no-verify 相当)。
+ */
+export function pgSslOption(url: string): { rejectUnauthorized: false } | undefined {
+  try {
+    const u = new URL(url)
+    const local = ['localhost', '127.0.0.1', '::1', '[::1]', ''].includes(u.hostname)
+    const sslmode = u.searchParams.get('sslmode')
+    if (local || sslmode === 'disable') return undefined
+  } catch {
+    // URL として解釈できない場合は TLS 側に倒す
+  }
+  return { rejectUnauthorized: false }
 }
 
 function resolveDbUrl(url: string): string {
