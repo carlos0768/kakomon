@@ -52,6 +52,15 @@ Vercel の Project → Settings → Environment Variables に設定する。
 
 ## 4. 動作確認
 
+まず `https://<project>.vercel.app/kakomon/health` を開く。DB の設定状況と接続結果が JSON で返る (秘密情報は含まない)。
+
+| フィールド | 正常な値 | 異常なときの意味 |
+|---|---|---|
+| `dbDialect` | `postgres` | `libsql` なら `KAKOMON_DB_URL` が Vercel に設定されていない (または Redeploy していない) |
+| `dbConfigured` | `true` | `false` なら環境変数が未設定 |
+| `db` | `ok` | `error` なら `dbError` に原因 (パスワード違い、ホスト違い、SSL など) |
+| `adminTokenConfigured` | `true` | `false` なら Studio と作問 API が無認証で公開されている |
+
 | URL | 期待 |
 |---|---|
 | `https://<project>.vercel.app/kakomon` | 受験者画面 (問題が無ければ「公開中の問題はありません」) |
@@ -93,6 +102,7 @@ npm run admin -- approve <runId>
 
 ## トラブルシュート
 
+- **登録やログインで「サーバ側のエラー」/ Internal Server Error** → `/kakomon/health` を開いて `db` と `dbError` を見る。たいていは `KAKOMON_DB_URL` 未設定 (Redeploy 忘れ) かパスワード違い。
 - **404 のまま** → Vercel のビルドログに `Deployer found, preparing deployer build...` が出ているか確認。出ていなければフレームワークに Mastra を選んでいないか、古いコミットをデプロイしている。
 - **問題一覧が常に空 / 承認したのに出ない** → `KAKOMON_DB_URL` が未設定で `file:` のままになっている。Function のログに `[kakomon] サーバレス環境でローカルファイル DB にフォールバック` が出る。
 - **`too many connections` / 接続エラー** → 直接接続 (5432) ではなく Transaction pooler (6543) の URI を使う。
