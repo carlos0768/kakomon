@@ -1,0 +1,12 @@
+node_modules/
+.mastra/
+dist/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+data/past-exams/*.pdf
+data/out/*
+!data/out/.gitkeep
+!data/past-exams/.gitkeep
