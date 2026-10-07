@@ -2,6 +2,7 @@ import { Agent } from '@mastra/core/agent'
 import { config } from '../config.ts'
 import { getExamSpecTool, getPastExamTool, listPastExamsTool, searchPastQuestionsTool } from '../tools/past-exam-tools.ts'
 import { createSemanticSearchTool } from '../tools/vector-search.ts'
+import { webTools } from '../tools/web-tools.ts'
 
 /**
  * 出題要件定義に基づいて予想問題を作問するエージェント。
@@ -17,6 +18,7 @@ export const generatorAgent = new Agent({
     getPastExamTool,
     searchPastQuestionsTool,
     semanticSearchTool: createSemanticSearchTool(),
+    ...webTools(),
   },
   instructions: `あなたは試験の作問委員です。与えられた出題要件定義 (spec) に従い、過去問と同じ試験として自然に成立する予想問題を 1 回分作成します。
 
@@ -28,6 +30,7 @@ export const generatorAgent = new Agent({
 - 各設問に domain / topic / questionType / difficulty / cognitiveLevel / distractorTechniques / keywords を付与し、要件定義の分野名と一致させる。
 - 事実・法令・数値は最新かつ正確なものを用い、不確かな事実を前提にした設問は作らない。
 - forecast の high priority トピックは必ず含める。
+- ネット検索 (webSearch / webFetch) は、法令・制度・数値の最新確認、公開されている出題傾向や直近の改定の把握に使う。ネット上の問題集や過去問を写してはいけない (著作権と重複の両面で不可)。
 
 最終出力はスキーマに従った JSON のみ。`,
 })

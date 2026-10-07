@@ -51,11 +51,13 @@ data/out/                  生成物 (git 管理外)
 | エージェント | モデル設定 | ツール | 出力 |
 |---|---|---|---|
 | `exam-extractor` | `KAKOMON_MODEL`, effort high | なし (PDF を直接読む) | `ExtractedExam` |
-| `exam-analyst` | `KAKOMON_MODEL`, effort high, maxSteps 40 | list / get / stats / search | `ExamSpec` |
-| `exam-generator` | `KAKOMON_MODEL`, effort xhigh, maxSteps 60 | spec / list / get / search / semantic | `generatedExam` (questions + designNotes) |
-| `exam-reviewer` | `KAKOMON_MODEL`, effort high | spec / search / get | `ReviewResult` |
+| `exam-analyst` | `KAKOMON_MODEL`, effort high, maxSteps 40 | list / get / stats / search / webSearch / webFetch | `ExamSpec` (参照した出典は `sources`) |
+| `exam-generator` | `KAKOMON_MODEL`, effort xhigh, maxSteps 60 | spec / list / get / search / semantic / webSearch / webFetch | `generatedExam` (questions + designNotes) |
+| `exam-reviewer` | `KAKOMON_MODEL`, effort high | spec / search / get / webSearch / webFetch | `ReviewResult` |
 | `exam-grader` | `KAKOMON_LIGHT_MODEL`, effort medium | なし | 解説バッチ |
 | `exam-coach` | `KAKOMON_LIGHT_MODEL`, effort medium | なし | coaching |
+
+`webSearch` は Anthropic のサーバー側ウェブ検索 (Mastra の `webSearchTool` がモデル提供元に合わせて解決する)、`webFetch` は Mastra 内蔵の URL 取得。公開されている出題傾向の分析・公式の出題範囲・法令の最新情報を補助的に使い、登録された過去問の実データを優先する。`KAKOMON_WEB_SEARCH=0` で無効化。
 
 「LLM に任せるもの」と「コードで決めるもの」を分けている。正誤判定・比率集計・優先度計算・レイアウト組版はコード、言語化と判断は LLM。
 

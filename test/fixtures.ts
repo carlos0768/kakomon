@@ -75,6 +75,7 @@ export function makeSpec(over: Partial<ExamSpec> = {}): ExamSpec {
     rules: { must: ['正解は 1 つ'], mustNot: ['過去問の丸写し'], styleGuide: [] },
     forecast: [{ topic: '計算', reason: '増加傾向', priority: 'high' }],
     sourceExamIds: [],
+    sources: [],
     ...over,
   }
 }

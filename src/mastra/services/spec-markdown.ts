@@ -59,6 +59,10 @@ export function specToMarkdown(spec: ExamSpec, specId?: string): string {
   lines.push(`\n## 次回予想 (重点トピック)\n`)
   lines.push(`| 優先度 | トピック | 理由 |\n|---|---|---|`)
   for (const f of spec.forecast) lines.push(`| ${f.priority} | ${f.topic} | ${f.reason} |`)
+  if (spec.sources.length) {
+    lines.push(`\n## 参照した出典 (ネット検索)\n`)
+    for (const src of spec.sources) lines.push(`- [${src.title}](${src.url})${src.note ? ` — ${src.note}` : ''}`)
+  }
   lines.push('')
   return lines.join('\n')
 }
