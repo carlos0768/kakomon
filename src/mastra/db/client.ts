@@ -10,7 +10,7 @@ let initialized: Promise<void> | undefined
  */
 export function getDb(): Client {
   if (!client) {
-    client = createClient({ url: config.dbUrl })
+    client = createClient({ url: config.dbUrl, authToken: config.dbAuthToken })
   }
   return client
 }

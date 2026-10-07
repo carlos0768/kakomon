@@ -85,6 +85,8 @@ npm run build && npm run start   # 本番ビルド
 
 テレメトリ送信 (posthog) を止めたい場合は `MASTRA_TELEMETRY_DISABLED=1`。
 
+Vercel に載せる場合は `docs/05_vercel-deployment.md` を参照 (Turso の DB と `KAKOMON_ADMIN_TOKEN` が必要)。
+
 ## 7. よくある質問
 
 - **Studio と CLI で DB が別になる** → `KAKOMON_DB_URL` を絶対パス (`file:/abs/path/kakomon.db`) にする。

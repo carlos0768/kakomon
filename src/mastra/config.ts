@@ -11,6 +11,10 @@ export const config = {
   lightModel: process.env.KAKOMON_LIGHT_MODEL ?? process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
   /** libSQL の接続 URL。Studio / CLI / サーバで同じ DB を見るため絶対パスに解決する */
   dbUrl: resolveDbUrl(process.env.KAKOMON_DB_URL ?? 'file:./kakomon.db'),
+  /** Turso など認証が必要なリモート libSQL のトークン */
+  dbAuthToken: process.env.TURSO_AUTH_TOKEN || process.env.KAKOMON_DB_AUTH_TOKEN || undefined,
+  /** サーバレス環境 (Vercel) でローカルファイル DB にフォールバックしている場合 true。データは永続化されない */
+  ephemeralDb: isServerless() && isLocalFileUrl(process.env.KAKOMON_DB_URL ?? 'file:./kakomon.db'),
   /** ベクトル検索用の埋め込みモデル (未設定なら無効) */
   embeddingModel: process.env.EMBEDDING_MODEL,
   /** 管理者 API を保護するトークン (未設定なら未保護: ローカル開発用) */
@@ -19,7 +23,17 @@ export const config = {
   outDir: path.resolve(process.cwd(), process.env.KAKOMON_OUT_DIR ?? 'data/out'),
 }
 
+function isServerless(): boolean {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME)
+}
+
+function isLocalFileUrl(url: string): boolean {
+  return url.startsWith('file:') || url === ':memory:'
+}
+
 function resolveDbUrl(url: string): string {
+  // Vercel などの読み取り専用 FS では /tmp にしか書けない (再起動で消える)
+  if (isServerless() && isLocalFileUrl(url)) return 'file:/tmp/kakomon.db'
   if (url.startsWith('file:') && !url.startsWith('file:/')) {
     return `file:${path.resolve(process.cwd(), url.slice('file:'.length))}`
   }
