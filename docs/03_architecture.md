@@ -70,6 +70,7 @@ data/out/                  生成物 (git 管理外)
 | `weakness_reports` | user_id, data_json | 最新の弱点分析 |
 | `users` | id, username (unique), password_hash (scrypt) | 受験者アカウント (メール不要) |
 | `sessions` | token_hash, user_id, expires_at | Cookie セッション (生トークンは保存しない) |
+| `jobs` | id, kind, status, run_id, input_json, result_json, suspend_json, error | 管理画面から起動した非同期ジョブ (取り込み/分析/作問/正解推定) |
 
 Mastra 自身のテーブル (ワークフロー snapshot, トレース等) も同じ DB に作られる。`KAKOMON_DB_URL` が `postgresql://` なら Postgres (Supabase: `PostgresStore` / `PgVector` / `pg`)、それ以外なら libSQL (`LibSQLStore` / `LibSQLVector` / `@libsql/client`) を使う。SQL は `src/mastra/db/client.ts` のアダプタで両方言に対応しており、Postgres 用のマイグレーションは `supabase/migrations/` にある。
 
@@ -99,14 +100,25 @@ Mastra 標準の `/api/*` (agents / workflows / Studio) に加えて、独自ル
 
 ### 管理者向け (`KAKOMON_ADMIN_TOKEN` 設定時は `Authorization: Bearer`)
 
+管理画面 `/kakomon/admin` (静的 1 ページ) がこれらを呼ぶ。重い処理は **ジョブ** (`jobs` テーブル) としてバックグラウンド実行し、画面は 5 秒ごとにポーリングする。
+
 | Method | Path | 内容 |
 |---|---|---|
-| GET | `/kakomon/admin/specs` | 要件定義一覧 |
-| GET | `/kakomon/admin/exams` | 全試験 (状態つき) |
-| POST | `/kakomon/admin/runs/:runId/approve` `{approved, note?}` | 承認待ち生成ワークフローの再開 |
+| GET | `/kakomon/admin/whoami` | トークン確認と環境情報 |
+| GET | `/kakomon/admin/exams` | 全試験 (状態・設問数・正解の有無) |
+| GET | `/kakomon/admin/exams/:examId/preview` | 正解・根拠つきプレビュー HTML (`?answers=0` で正解なし) |
 | POST | `/kakomon/admin/exams/:examId/status` `{status}` | 公開/非公開の切替 |
+| POST | `/kakomon/admin/exams/:examId/solve` | 正解推定ジョブを開始 |
+| POST | `/kakomon/admin/upload` (multipart: file, title, year, session) | PDF を保存して取り込みジョブを開始 |
+| GET | `/kakomon/admin/specs` / `/kakomon/admin/specs/:id/markdown` | 要件定義一覧 / Markdown |
+| POST | `/kakomon/admin/analyze` `{title?, focus?, examIds?}` | 傾向分析ジョブを開始 |
+| POST | `/kakomon/admin/generate` `{specId, title, referenceExamId?, questionCount?, instructions?}` | 作問ジョブを開始 (承認待ちで止まる) |
+| GET | `/kakomon/admin/jobs` / `/kakomon/admin/jobs/:id` | ジョブ一覧 / 詳細 |
+| POST | `/kakomon/admin/jobs/:id/approve` `{approved, note?}` | 承認待ちの作問ジョブを再開 (公開 or 却下) |
+| GET | `/kakomon/admin/users` / POST `/kakomon/admin/users/:username/reset-password` | 受験者一覧 / パスワード再設定 |
+| POST | `/kakomon/admin/runs/:runId/approve` | 互換: CLI と同じ runId ベースの承認 |
 
-作問・分析の起動は Studio (`/api/workflows/*`) か CLI から行う。
+Studio (`/api/workflows/*`) と CLI からも同じワークフローを起動できる。
 
 ## 既知の制約と拡張ポイント
 

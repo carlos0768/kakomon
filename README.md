@@ -14,11 +14,16 @@
 ```bash
 npm install
 cp .env.example .env          # ANTHROPIC_API_KEY を設定
+npm run dev                   # 管理画面: http://localhost:4111/kakomon/admin / 受験者UI: /kakomon / Studio: /
+```
+
+管理画面で「PDF アップロード → 分析 → 作問 → 確認 → 承認・公開」まで全部できる。CLI でも同じことができる:
+
+```bash
 npm run admin -- ingest data/past-exams/2024.pdf --year 2024   # 過去問を登録 (複数年度)
 npm run admin -- analyze --title "○○試験"                       # 出題要件定義を生成 → docs/specs/<specId>.md
 npm run admin -- generate --spec <specId> --title "予想問題 第1回"   # 作問 → 校閲 → 承認待ち
 npm run admin -- approve <runId>                                 # 承認 → data/out/<examId>.html/.pdf → 公開
-npm run dev                                                      # Studio: http://localhost:4111 / 受験者UI: /kakomon
 ```
 
 ## 処理の流れ
