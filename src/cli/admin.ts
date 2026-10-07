@@ -8,8 +8,10 @@
  *   npm run admin -- generate --spec <specId> --title "..." [--ref <examId>] [--count N] [--instructions "..."] [--max-revisions N]
  *   npm run admin -- approve <runId> [--reject] [--note "..."]
  *   npm run admin -- render  <examId> [--answers]        HTML/PDF を再生成
- *   npm run admin -- list    [exams|specs]
+ *   npm run admin -- list    [exams|specs|users]
  *   npm run admin -- export-spec <specId> [--out path]   要件定義を Markdown で書き出す
+ *   npm run admin -- user create <username> <password>   受験者アカウントを作る
+ *   npm run admin -- user reset-password <username> <newPassword>   パスワードを再設定 (忘れたとき)
  */
 import { writeFile } from 'node:fs/promises'
 import { mastra } from '../mastra/index.ts'
@@ -18,6 +20,7 @@ import { getExam, getSpec, listExams, listSpecs, saveExam } from '../mastra/db/r
 import { renderExamFiles } from '../mastra/render/pdf.ts'
 import { adminApprovalStep } from '../mastra/workflows/generate-exam.workflow.ts'
 import { specToMarkdown } from '../mastra/services/spec-markdown.ts'
+import { listUsers, registerUser, resetPassword } from '../mastra/services/auth.ts'
 import { z } from 'zod'
 
 const [, , command, ...rest] = process.argv
@@ -169,6 +172,8 @@ async function main() {
       const what = positional[0] ?? 'exams'
       if (what === 'specs') {
         for (const s of await listSpecs()) console.log(`${s.id}\t${s.status}\t${s.title}\t(${s.spec.sourceExamIds.length} exams)`)
+      } else if (what === 'users') {
+        for (const u of await listUsers()) console.log(`${u.id}\t${u.username}\t${u.createdAt}`)
       } else {
         for (const e of await listExams()) console.log(`${e.id}\t${e.kind}\t${e.status}\t${e.year ?? '-'}\t${e.title}\t${e.exam.questions.length}問`)
       }
@@ -187,6 +192,19 @@ async function main() {
       } else console.log(md)
       break
     }
+    case 'user': {
+      const [sub, username, password] = positional
+      if (sub === 'create' && username && password) {
+        const u = await registerUser(username, password)
+        console.log(`created: ${u.username} (${u.id})`)
+      } else if (sub === 'reset-password' && username && password) {
+        await resetPassword(username, password)
+        console.log(`password reset: ${username} (既存のログインは無効化されました)`)
+      } else {
+        throw new Error('usage: user create <username> <password> | user reset-password <username> <newPassword>')
+      }
+      break
+    }
     default:
       console.error(`unknown command: ${command ?? '(none)'}\n\n${usage()}`)
       process.exitCode = 1
@@ -194,7 +212,7 @@ async function main() {
 }
 
 function usage() {
-  return `commands: ingest | solve | analyze | generate | approve | render | list | export-spec`
+  return `commands: ingest | solve | analyze | generate | approve | render | list | export-spec | user`
 }
 
 main().catch(err => {

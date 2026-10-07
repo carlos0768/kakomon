@@ -76,7 +76,17 @@ curl http://localhost:4111/kakomon/exams
 
 非公開に戻す: `POST /kakomon/admin/exams/<examId>/status {"status":"archived"}`。
 
-## 6. サーバ起動
+## 6. 受験者アカウント
+
+受験者は `/kakomon` の画面から自分でユーザー名とパスワードを決めて登録する (メール不要)。管理者側の操作は次の 2 つだけ。
+
+```bash
+npm run admin -- list users                                  # 登録済みユーザーの一覧
+npm run admin -- user reset-password <username> <newPassword> # パスワードを忘れた人の再設定 (本人のログインは全て無効化される)
+npm run admin -- user create <username> <password>           # 管理者側で先に作っておきたい場合
+```
+
+## 7. サーバ起動
 
 ```bash
 npm run dev      # Studio + API (http://localhost:4111)。受験者 UI は http://localhost:4111/kakomon
@@ -87,9 +97,10 @@ npm run build && npm run start   # 本番ビルド
 
 Vercel に載せる場合は `docs/05_vercel-deployment.md` を参照 (Supabase の DB と `KAKOMON_ADMIN_TOKEN` が必要)。
 
-## 7. よくある質問
+## 8. よくある質問
 
 - **Studio と CLI で DB が別になる** → `KAKOMON_DB_URL` を絶対パス (`file:/abs/path/kakomon.db`) にする。
 - **PDF が出ない** → `playwright-core` と Chromium が必要。`pdfSkippedReason` に理由が入る。HTML は常に出る。`KAKOMON_CHROMIUM_PATH` で既存の Chrome を指せる。
 - **生成が要件から外れる** → `docs/specs/<specId>.md` の分野名・比率・mustNot を見直し、`--instructions` で補足を渡す。校閲の `issues` を読むと原因が分かる。
-- **弱点分析ができない** → 同じ `userId` で 2 回以上提出が必要。
+- **弱点分析ができない** → 同じアカウントで 2 回以上提出が必要。
+- **受験者がパスワードを忘れた** → `npm run admin -- user reset-password <username> <newPassword>`。

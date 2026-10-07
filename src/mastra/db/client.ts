@@ -75,6 +75,19 @@ export const DDL = [
     data_json TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
 ]
 
 export function isPostgresUrl(url: string): boolean {
@@ -177,7 +190,7 @@ export async function resetDbForTests(url?: string): Promise<void> {
   db = isPostgresUrl(target) ? createPostgresDb(target) : createLibsqlDb(target)
   initialized = undefined
   if (db.dialect === 'postgres') {
-    await db.execute('DROP TABLE IF EXISTS weakness_reports, attempts, questions, specs, exams CASCADE')
+    await db.execute('DROP TABLE IF EXISTS sessions, users, weakness_reports, attempts, questions, specs, exams CASCADE')
   }
   await ensureSchema()
 }
