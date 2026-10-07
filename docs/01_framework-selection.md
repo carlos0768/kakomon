@@ -8,7 +8,7 @@
 |---|---|
 | エージェント基盤 | `@mastra/core` 1.75 系 (Agent / Tool / Workflow / RAG / Storage / Studio) |
 | LLM | Claude Opus 5.5 (`anthropic/claude-opus-5-5`)。Mastra の model router 経由で公式 `@ai-sdk/anthropic` が使われる |
-| 永続化 | libSQL (SQLite 互換)。開発はファイル 1 つ、本番は Turso または `@mastra/pg` (Supabase/pgvector) に差し替え可能 |
+| 永続化 | 開発は libSQL (SQLite ファイル 1 つ)、本番は Supabase (PostgreSQL, `@mastra/pg`)。同じコードが両方で動く |
 | ベクトル検索 | 任意。`EMBEDDING_MODEL` を設定したときのみ `LibSQLVector` を使う (Voyage / OpenAI / Cohere / Google の埋め込みに対応) |
 | 見た目の再現 | レイアウトプロファイル → HTML/CSS → Chromium (playwright-core) で PDF |
 

@@ -69,7 +69,7 @@ data/out/                  生成物 (git 管理外)
 | `attempts` | id, user_id, exam_id, status, answers_json, result_json | 受験と添削結果 |
 | `weakness_reports` | user_id, data_json | 最新の弱点分析 |
 
-Mastra 自身のテーブル (ワークフロー snapshot, トレース等) も同じ DB ファイルに作られる (`LibSQLStore`)。本番で PostgreSQL (Supabase) に移す場合は `LibSQLStore`/`LibSQLVector` を `@mastra/pg` に置換し、`db/client.ts` を pg 用に差し替える。
+Mastra 自身のテーブル (ワークフロー snapshot, トレース等) も同じ DB に作られる。`KAKOMON_DB_URL` が `postgresql://` なら Postgres (Supabase: `PostgresStore` / `PgVector` / `pg`)、それ以外なら libSQL (`LibSQLStore` / `LibSQLVector` / `@libsql/client`) を使う。SQL は `src/mastra/db/client.ts` のアダプタで両方言に対応しており、Postgres 用のマイグレーションは `supabase/migrations/` にある。
 
 ## HTTP API
 
@@ -104,7 +104,7 @@ Mastra 標準の `/api/*` (agents / workflows / Studio) に加えて、独自ル
 
 - **図版**: 図や表を含む設問の見た目再現は未対応 (テキストのみ)。
 - **認証**: 受験者 ID は自己申告。管理者側は `KAKOMON_ADMIN_TOKEN` による `SimpleAuth` で保護 (Studio・`/api/*`・`/kakomon/admin/*`)。受験者にもログインを付けるなら Mastra の auth (Supabase/Clerk など) に差し替える。
-- **デプロイ**: Vercel は `docs/05_vercel-deployment.md`。DB は Turso、PDF 生成と取り込みは手元の CLI。
+- **デプロイ**: Vercel は `docs/05_vercel-deployment.md`。DB は Supabase (PostgreSQL)、PDF 生成と取り込みは手元の CLI。
 - **UI**: `/kakomon` は参照実装。Next.js へ移す場合は `src/mastra` をそのまま置き、Route Handler から `mastra.getWorkflow(...)` を呼ぶ (Mastra 公式の Next.js ガイドに準拠)。
 - **ベクトル検索**: 既定は無効。過去問が数百問を超える、または言い回しの違う類題検出を強化したい場合に `EMBEDDING_MODEL` を設定する。
 - **コスト**: 1 回分の生成は 作問 (xhigh, 数十ステップ) + 校閲 + 改訂 で Opus 5.5 を複数回呼ぶ。試算は Studio のトレースで `usage` を確認する。

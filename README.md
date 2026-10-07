@@ -7,7 +7,7 @@
 - 要件定義: [docs/02_requirements-definition.md](docs/02_requirements-definition.md)
 - 設計: [docs/03_architecture.md](docs/03_architecture.md)
 - 管理者手順: [docs/04_admin-runbook.md](docs/04_admin-runbook.md)
-- Vercel デプロイ: [docs/05_vercel-deployment.md](docs/05_vercel-deployment.md)
+- Vercel + Supabase デプロイ: [docs/05_vercel-deployment.md](docs/05_vercel-deployment.md)
 
 ## クイックスタート
 
@@ -36,4 +36,6 @@ npm run dev                                                      # Studio: http:
 ```bash
 npm run typecheck   # tsc
 npm test            # vitest (決定的ロジック + モック LLM の結合テスト)
+KAKOMON_TEST_PG_URL=postgresql://postgres@127.0.0.1:5432/kakomon_test npm test   # Postgres 方言のテストも実行
+npm run db:migrate  # KAKOMON_DB_URL の DB にアプリのテーブルを作成 (冪等)
 ```
