@@ -24,15 +24,28 @@ const adminAuth = async (c: any, next: () => Promise<void>) => {
 }
 
 export const apiRoutes = [
+  // ---- ルート: Studio が無い本番環境では受験者 UI へ ----
+  ...(process.env.NODE_ENV === 'production' && !process.env.VERCEL
+    ? [
+        registerApiRoute('/', {
+          method: 'GET',
+          requiresAuth: false,
+          handler: async c => c.redirect('/kakomon'),
+        }),
+      ]
+    : []),
+
   // ---- 受験者 UI (静的 1 ページ) ----
   registerApiRoute('/kakomon', {
     method: 'GET',
+    requiresAuth: false,
     handler: async c => c.html(userUiHtml()),
   }),
 
   // ---- 公開済み予想問題の一覧 ----
   registerApiRoute('/kakomon/exams', {
     method: 'GET',
+    requiresAuth: false,
     handler: async c => {
       const exams = await listExams({ kind: 'predicted', status: 'published' })
       return c.json({
@@ -51,6 +64,7 @@ export const apiRoutes = [
   // ---- 問題本文 (正解・解説なし) ----
   registerApiRoute('/kakomon/exams/:examId', {
     method: 'GET',
+    requiresAuth: false,
     handler: async c => {
       const rec = await getExam(c.req.param('examId'))
       if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.json({ error: 'not found' }, 404)
@@ -69,6 +83,7 @@ export const apiRoutes = [
   // ---- 原本の見た目を再現した印刷用 HTML ----
   registerApiRoute('/kakomon/exams/:examId/print', {
     method: 'GET',
+    requiresAuth: false,
     handler: async c => {
       const rec = await getExam(c.req.param('examId'))
       if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
@@ -80,6 +95,7 @@ export const apiRoutes = [
   // ---- 受験開始 ----
   registerApiRoute('/kakomon/attempts', {
     method: 'POST',
+    requiresAuth: false,
     handler: async c => {
       const body = z.object({ userId: z.string().min(1), examId: z.string().min(1) }).safeParse(await c.req.json())
       if (!body.success) return c.json({ error: body.error.issues }, 400)
@@ -93,6 +109,7 @@ export const apiRoutes = [
   // ---- 解答提出 → 添削 ----
   registerApiRoute('/kakomon/attempts/:attemptId/submit', {
     method: 'POST',
+    requiresAuth: false,
     handler: async c => {
       const attemptId = c.req.param('attemptId')
       const body = z.object({ answers: z.array(answerSchema) }).safeParse(await c.req.json())
@@ -111,6 +128,7 @@ export const apiRoutes = [
   // ---- 採点結果の再取得 ----
   registerApiRoute('/kakomon/attempts/:attemptId', {
     method: 'GET',
+    requiresAuth: false,
     handler: async c => {
       const attempt = await getAttempt(c.req.param('attemptId'))
       if (!attempt) return c.json({ error: 'attempt not found' }, 404)
@@ -121,6 +139,7 @@ export const apiRoutes = [
   // ---- 受験履歴 ----
   registerApiRoute('/kakomon/users/:userId/attempts', {
     method: 'GET',
+    requiresAuth: false,
     handler: async c => {
       const attempts = await listAttempts(c.req.param('userId'))
       return c.json({
@@ -142,6 +161,7 @@ export const apiRoutes = [
   // ---- 弱点分析 (2 回以上の受験が必要) ----
   registerApiRoute('/kakomon/users/:userId/weakness', {
     method: 'POST',
+    requiresAuth: false,
     handler: async c => {
       const userId = c.req.param('userId')
       const submitted = (await listAttempts(userId, 'submitted')).length
@@ -157,6 +177,7 @@ export const apiRoutes = [
   }),
   registerApiRoute('/kakomon/users/:userId/weakness', {
     method: 'GET',
+    requiresAuth: false,
     handler: async c => {
       const report = await getWeaknessReport(c.req.param('userId'))
       return report ? c.json(report) : c.json({ error: 'no report yet' }, 404)

@@ -10,3 +10,4 @@ data/past-exams/*.pdf
 data/out/*
 !data/out/.gitkeep
 !data/past-exams/.gitkeep
+.vercel/

@@ -7,6 +7,7 @@
 - 要件定義: [docs/02_requirements-definition.md](docs/02_requirements-definition.md)
 - 設計: [docs/03_architecture.md](docs/03_architecture.md)
 - 管理者手順: [docs/04_admin-runbook.md](docs/04_admin-runbook.md)
+- Vercel デプロイ: [docs/05_vercel-deployment.md](docs/05_vercel-deployment.md)
 
 ## クイックスタート
 

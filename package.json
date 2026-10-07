@@ -19,6 +19,7 @@
   "dependencies": {
     "@libsql/client": "^0.18.0",
     "@mastra/core": "^1.75.0",
+    "@mastra/deployer-vercel": "^1.2.34",
     "@mastra/libsql": "^1.25.1",
     "@mastra/rag": "^2.6.6",
     "ai": "^7.0.130",

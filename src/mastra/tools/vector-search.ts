@@ -16,7 +16,7 @@ import type { ExtractedExam } from '../schemas/exam.ts'
 export const VECTOR_STORE_NAME = 'kakomonVector'
 export const VECTOR_INDEX = 'past_questions'
 
-export const vectorStore = new LibSQLVector({ id: VECTOR_STORE_NAME, url: config.dbUrl })
+export const vectorStore = new LibSQLVector({ id: VECTOR_STORE_NAME, url: config.dbUrl, authToken: config.dbAuthToken })
 
 export function isVectorSearchEnabled(): boolean {
   return Boolean(config.embeddingModel)

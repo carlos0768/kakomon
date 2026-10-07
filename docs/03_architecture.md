@@ -103,7 +103,8 @@ Mastra 標準の `/api/*` (agents / workflows / Studio) に加えて、独自ル
 ## 既知の制約と拡張ポイント
 
 - **図版**: 図や表を含む設問の見た目再現は未対応 (テキストのみ)。
-- **認証**: 受験者 ID は自己申告。本番では Mastra の auth (Supabase/Clerk など) を `server.auth` に設定する。
+- **認証**: 受験者 ID は自己申告。管理者側は `KAKOMON_ADMIN_TOKEN` による `SimpleAuth` で保護 (Studio・`/api/*`・`/kakomon/admin/*`)。受験者にもログインを付けるなら Mastra の auth (Supabase/Clerk など) に差し替える。
+- **デプロイ**: Vercel は `docs/05_vercel-deployment.md`。DB は Turso、PDF 生成と取り込みは手元の CLI。
 - **UI**: `/kakomon` は参照実装。Next.js へ移す場合は `src/mastra` をそのまま置き、Route Handler から `mastra.getWorkflow(...)` を呼ぶ (Mastra 公式の Next.js ガイドに準拠)。
 - **ベクトル検索**: 既定は無効。過去問が数百問を超える、または言い回しの違う類題検出を強化したい場合に `EMBEDDING_MODEL` を設定する。
 - **コスト**: 1 回分の生成は 作問 (xhigh, 数十ステップ) + 校閲 + 改訂 で Opus 5.5 を複数回呼ぶ。試算は Studio のトレースで `usage` を確認する。
