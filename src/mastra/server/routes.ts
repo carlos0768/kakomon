@@ -1,6 +1,7 @@
 import { registerApiRoute } from '@mastra/core/server'
 import { z } from 'zod'
 import { config } from '../config.ts'
+import { ensureSchema, getDb } from '../db/client.ts'
 import { createAttempt, getAttempt, getExam, getWeaknessReport, listAttempts, listExams, listSpecs, updateExamStatus } from '../db/repo.ts'
 import { answerSchema } from '../schemas/grading.ts'
 import { toPublicQuestion } from '../schemas/exam.ts'
@@ -71,6 +72,32 @@ export const apiRoutes = [
     handler: async c => c.html(userUiHtml()),
   }),
 
+  // ---- 動作確認: DB 設定と接続状態 (秘密情報は返さない) ----
+  registerApiRoute('/kakomon/health', {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async c => {
+      const info: Record<string, unknown> = {
+        dbDialect: config.dbDialect,
+        dbConfigured: Boolean(process.env.KAKOMON_DB_URL),
+        ephemeralDb: config.ephemeralDb,
+        serverless: config.isServerless,
+        adminTokenConfigured: Boolean(config.adminToken),
+        anthropicKeyConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
+      }
+      try {
+        await ensureSchema()
+        const rows = await getDb().execute('SELECT COUNT(*) AS n FROM users')
+        info.db = 'ok'
+        info.users = Number(rows[0]?.n ?? 0)
+      } catch (err) {
+        info.db = 'error'
+        info.dbError = err instanceof Error ? err.message : String(err)
+      }
+      return c.json(info, info.db === 'ok' ? 200 : 500)
+    },
+  }),
+
   // ---- アカウント: 登録 / ログイン / ログアウト / 自分 ----
   registerApiRoute('/kakomon/auth/register', {
     method: 'POST',
@@ -85,7 +112,8 @@ export const apiRoutes = [
         return c.json(publicUser(user), 201)
       } catch (err) {
         if (err instanceof AuthError) return c.json({ error: err.message }, err.status)
-        throw err
+        console.error('[kakomon] register failed', err)
+        return c.json({ error: `登録に失敗しました (サーバ側のエラー): ${err instanceof Error ? err.message : String(err)}` }, 500)
       }
     },
   }),
@@ -102,7 +130,8 @@ export const apiRoutes = [
         return c.json(publicUser(user))
       } catch (err) {
         if (err instanceof AuthError) return c.json({ error: err.message }, err.status)
-        throw err
+        console.error('[kakomon] login failed', err)
+        return c.json({ error: `ログインに失敗しました (サーバ側のエラー): ${err instanceof Error ? err.message : String(err)}` }, 500)
       }
     },
   }),
