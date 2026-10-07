@@ -68,6 +68,8 @@ data/out/                  生成物 (git 管理外)
 | `specs` | id, title, status, data_json | 出題要件定義 |
 | `attempts` | id, user_id, exam_id, status, answers_json, result_json | 受験と添削結果 |
 | `weakness_reports` | user_id, data_json | 最新の弱点分析 |
+| `users` | id, username (unique), password_hash (scrypt) | 受験者アカウント (メール不要) |
+| `sessions` | token_hash, user_id, expires_at | Cookie セッション (生トークンは保存しない) |
 
 Mastra 自身のテーブル (ワークフロー snapshot, トレース等) も同じ DB に作られる。`KAKOMON_DB_URL` が `postgresql://` なら Postgres (Supabase: `PostgresStore` / `PgVector` / `pg`)、それ以外なら libSQL (`LibSQLStore` / `LibSQLVector` / `@libsql/client`) を使う。SQL は `src/mastra/db/client.ts` のアダプタで両方言に対応しており、Postgres 用のマイグレーションは `supabase/migrations/` にある。
 
@@ -77,17 +79,23 @@ Mastra 標準の `/api/*` (agents / workflows / Studio) に加えて、独自ル
 
 ### 受験者向け (正解を返さない)
 
+アカウントはユーザー名 + パスワードのみ (メール不要)。ログインすると `kakomon_session` Cookie (HttpOnly, 30 日) が発行され、受験・履歴・弱点分析はその本人に限定される。
+
 | Method | Path | 内容 |
 |---|---|---|
-| GET | `/kakomon` | 最小 UI |
+| GET | `/kakomon` | 最小 UI (登録/ログイン画面つき) |
+| POST | `/kakomon/auth/register` `{username, password}` | 登録 (英数字 3〜32 文字 / 8 文字以上) → そのままログイン |
+| POST | `/kakomon/auth/login` `{username, password}` | ログイン |
+| POST | `/kakomon/auth/logout` | ログアウト |
+| GET | `/kakomon/auth/me` | ログイン中のユーザー |
 | GET | `/kakomon/exams` | 公開中の予想問題一覧 |
 | GET | `/kakomon/exams/:examId` | 問題本文 (選択肢のラベル・本文のみ) |
 | GET | `/kakomon/exams/:examId/print` | 原本の見た目を再現した印刷用 HTML |
-| POST | `/kakomon/attempts` `{userId, examId}` | 受験開始 |
-| POST | `/kakomon/attempts/:id/submit` `{answers:[{questionNumber, selectedLabel}]}` | 提出 → 添削結果 |
-| GET | `/kakomon/attempts/:id` | 添削結果の再取得 |
-| GET | `/kakomon/users/:userId/attempts` | 履歴と弱点分析可否 |
-| POST/GET | `/kakomon/users/:userId/weakness` | 弱点分析の実行 / 最新結果 |
+| POST | `/kakomon/attempts` `{examId}` | 受験開始 (要ログイン) |
+| POST | `/kakomon/attempts/:id/submit` `{answers:[{questionNumber, selectedLabel}]}` | 提出 → 添削結果 (本人のみ) |
+| GET | `/kakomon/attempts/:id` | 添削結果の再取得 (本人のみ) |
+| GET | `/kakomon/me/attempts` | 自分の履歴と弱点分析可否 |
+| POST/GET | `/kakomon/me/weakness` | 自分の弱点分析の実行 / 最新結果 |
 
 ### 管理者向け (`KAKOMON_ADMIN_TOKEN` 設定時は `Authorization: Bearer`)
 
@@ -103,7 +111,7 @@ Mastra 標準の `/api/*` (agents / workflows / Studio) に加えて、独自ル
 ## 既知の制約と拡張ポイント
 
 - **図版**: 図や表を含む設問の見た目再現は未対応 (テキストのみ)。
-- **認証**: 受験者 ID は自己申告。管理者側は `KAKOMON_ADMIN_TOKEN` による `SimpleAuth` で保護 (Studio・`/api/*`・`/kakomon/admin/*`)。受験者にもログインを付けるなら Mastra の auth (Supabase/Clerk など) に差し替える。
+- **認証**: 受験者はユーザー名 + パスワードの簡易アカウント (scrypt ハッシュ + Cookie セッション、メール不要、身内向け)。パスワードを忘れた場合は管理者が `npm run admin -- user reset-password` で再設定する。管理者側は `KAKOMON_ADMIN_TOKEN` による `SimpleAuth` で保護 (Studio・`/api/*`・`/kakomon/admin/*`)。
 - **デプロイ**: Vercel は `docs/05_vercel-deployment.md`。DB は Supabase (PostgreSQL)、PDF 生成と取り込みは手元の CLI。
 - **UI**: `/kakomon` は参照実装。Next.js へ移す場合は `src/mastra` をそのまま置き、Route Handler から `mastra.getWorkflow(...)` を呼ぶ (Mastra 公式の Next.js ガイドに準拠)。
 - **ベクトル検索**: 既定は無効。過去問が数百問を超える、または言い回しの違う類題検出を強化したい場合に `EMBEDDING_MODEL` を設定する。

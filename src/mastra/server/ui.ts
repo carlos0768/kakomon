@@ -1,5 +1,6 @@
 /**
  * 受験者向けの最小 UI (依存なしの 1 ページ)。
+ * アカウントはユーザー名 + パスワードのみ (Cookie セッション)。
  * 本番では Next.js 等に置き換える前提で、API の使い方を示す参照実装として置いている。
  */
 export function userUiHtml(): string {
@@ -17,25 +18,29 @@ export function userUiHtml(): string {
   .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin:12px 0; }
   button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:14px; }
   button.secondary { background:transparent; color:var(--accent); border:1px solid var(--accent); }
-  input { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); }
+  button:disabled { opacity:.6; cursor:default; }
+  input { padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); font-size:15px; }
+  form.auth { display:flex; flex-direction:column; gap:10px; max-width:340px; }
+  .tabs { display:flex; gap:8px; margin-bottom:12px; }
+  .tabs button { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  .tabs button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
   .q { border-top:1px solid var(--line); padding:12px 0; }
   .q .stem { white-space:pre-wrap; }
   .q .passage { border-left:3px solid var(--line); padding-left:10px; margin:6px 0; white-space:pre-wrap; opacity:.9; }
   .choice { display:block; margin:4px 0; cursor:pointer; }
   .ok { color:var(--ok); font-weight:600; } .ng { color:var(--ng); font-weight:600; }
   .fb { background:rgba(127,127,127,.08); border-radius:6px; padding:8px 10px; margin-top:6px; font-size:14px; }
+  .err { color:var(--ng); font-size:14px; min-height:1.2em; }
   table { border-collapse:collapse; width:100%; font-size:14px; } td,th { border-bottom:1px solid var(--line); padding:4px 6px; text-align:left; }
   .muted { opacity:.7; font-size: 13px; }
+  header.top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>予想問題</h1>
-  <div class="card">
-    <label>受験者ID <input id="userId" placeholder="例: taro" /></label>
-    <button id="loadBtn">問題一覧を読み込む</button>
-    <button id="histBtn" class="secondary">受験履歴 / 弱点分析</button>
-  </div>
+  <header class="top"><h1>予想問題</h1><div id="who"></div></header>
+  <div id="auth"></div>
+  <div id="home"></div>
   <div id="list"></div>
   <div id="exam"></div>
   <div id="result"></div>
@@ -43,29 +48,76 @@ export function userUiHtml(): string {
 </main>
 <script>
 const $ = s => document.querySelector(s);
-const api = async (path, opts) => { const r = await fetch(path, { headers: {'content-type':'application/json'}, ...opts }); const j = await r.json(); if (!r.ok) throw new Error(j.error ? (typeof j.error === 'string' ? j.error : JSON.stringify(j.error)) : r.statusText); return j; };
+const api = async (path, opts) => {
+  const r = await fetch(path, { credentials: 'same-origin', headers: {'content-type':'application/json'}, ...opts });
+  let j = {}; try { j = await r.json(); } catch {}
+  if (!r.ok) { const e = new Error(j.error ? (typeof j.error === 'string' ? j.error : JSON.stringify(j.error)) : r.statusText); e.status = r.status; throw e; }
+  return j;
+};
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const uid = () => { const v = $('#userId').value.trim(); if (!v) throw new Error('受験者IDを入力してください'); localStorage.setItem('kakomon.userId', v); return v; };
-try { $('#userId').value = localStorage.getItem('kakomon.userId') || ''; } catch {}
 
+let me = null;      // { userId, username }
 let current = null; // { attemptId, exam }
 
-$('#loadBtn').onclick = async () => {
+// ---------- 認証 ----------
+function renderAuth(mode) {
+  mode = mode || 'login';
+  $('#auth').innerHTML = '<div class="card">'
+    + '<div class="tabs"><button id="tabLogin" class="' + (mode==='login'?'active':'') + '">ログイン</button><button id="tabReg" class="' + (mode==='register'?'active':'') + '">新規登録</button></div>'
+    + '<form class="auth" id="authForm" autocomplete="on">'
+    + '<input id="username" placeholder="ユーザー名 (英数字 3〜32 文字)" autocomplete="username" required>'
+    + '<input id="password" type="password" placeholder="パスワード (8 文字以上)" autocomplete="' + (mode==='login'?'current-password':'new-password') + '" required>'
+    + (mode==='register' ? '<input id="password2" type="password" placeholder="パスワード (確認)" autocomplete="new-password" required>' : '')
+    + '<div class="err" id="authErr"></div>'
+    + '<button type="submit">' + (mode==='login' ? 'ログイン' : '登録してはじめる') + '</button>'
+    + '</form><p class="muted">メールアドレスは不要です。身内向けの簡易アカウントなので、パスワードを忘れた場合は管理者に再設定を依頼してください。</p></div>';
+  $('#tabLogin').onclick = () => renderAuth('login');
+  $('#tabReg').onclick = () => renderAuth('register');
+  $('#authForm').onsubmit = async e => {
+    e.preventDefault();
+    const username = $('#username').value.trim(), password = $('#password').value;
+    if (mode === 'register' && password !== $('#password2').value) { $('#authErr').textContent = 'パスワードが一致しません'; return; }
+    try {
+      me = await api('/kakomon/auth/' + mode, { method:'POST', body: JSON.stringify({ username, password }) });
+      $('#auth').innerHTML = ''; renderHome();
+    } catch (err) { $('#authErr').textContent = err.message; }
+  };
+}
+
+async function init() {
+  try { me = await api('/kakomon/auth/me'); renderHome(); }
+  catch { me = null; renderAuth('login'); }
+}
+
+function renderWho() {
+  $('#who').innerHTML = me ? '<span class="muted">' + esc(me.username) + ' さん</span> <button id="logoutBtn" class="secondary">ログアウト</button>' : '';
+  if (me) $('#logoutBtn').onclick = async () => { await api('/kakomon/auth/logout', { method:'POST' }); me = null; current = null;
+    ['#home','#list','#exam','#result','#history'].forEach(s => $(s).innerHTML = ''); renderWho(); renderAuth('login'); };
+}
+
+// ---------- ホーム ----------
+function renderHome() {
+  renderWho();
+  $('#home').innerHTML = '<div class="card"><button id="loadBtn">問題一覧を読み込む</button> <button id="histBtn" class="secondary">受験履歴 / 弱点分析</button></div>';
+  $('#loadBtn').onclick = loadExams;
+  $('#histBtn').onclick = showHistory;
+  loadExams();
+}
+
+async function loadExams() {
   try {
-    uid();
     const { exams } = await api('/kakomon/exams');
     $('#list').innerHTML = '<div class="card"><h2>公開中の予想問題</h2>' + (exams.length ? exams.map(e =>
       '<div class="q"><strong>' + esc(e.title) + '</strong> <span class="muted">' + e.questionCount + '問' + (e.timeLimitMinutes ? ' / ' + e.timeLimitMinutes + '分' : '') + '</span> '
       + '<button data-id="' + e.examId + '">受験する</button> <a class="muted" href="/kakomon/exams/' + e.examId + '/print" target="_blank">印刷用</a></div>').join('') : '<p class="muted">公開中の問題はありません (管理者が生成・承認すると表示されます)</p>') + '</div>';
     document.querySelectorAll('#list button[data-id]').forEach(b => b.onclick = () => startExam(b.dataset.id));
   } catch (e) { alert(e.message); }
-};
+}
 
 async function startExam(examId) {
   try {
-    const userId = uid();
     const exam = await api('/kakomon/exams/' + examId);
-    const { attemptId } = await api('/kakomon/attempts', { method:'POST', body: JSON.stringify({ userId, examId }) });
+    const { attemptId } = await api('/kakomon/attempts', { method:'POST', body: JSON.stringify({ examId }) });
     current = { attemptId, exam };
     $('#result').innerHTML = ''; $('#history').innerHTML = '';
     $('#exam').innerHTML = '<div class="card"><h2>' + esc(exam.title) + '</h2>'
@@ -78,7 +130,7 @@ async function startExam(examId) {
       + '<p><button id="submitBtn">解答を提出して添削を受ける</button></p></div>';
     $('#submitBtn').onclick = submit;
     window.scrollTo({ top: $('#exam').offsetTop, behavior: 'smooth' });
-  } catch (e) { alert(e.message); }
+  } catch (e) { if (e.status === 401) { me = null; renderAuth('login'); } alert(e.message); }
 }
 
 async function submit() {
@@ -110,19 +162,17 @@ function renderResult(r) {
 
 async function showHistory() {
   try {
-    const userId = uid();
-    const h = await api('/kakomon/users/' + userId + '/attempts');
+    const h = await api('/kakomon/me/attempts');
     const rows = h.attempts.filter(a => a.status === 'submitted');
     $('#history').innerHTML = '<div class="card"><h2>受験履歴</h2>' + (rows.length ? '<table><tr><th>日時</th><th>得点</th></tr>' + rows.map(a => '<tr><td>' + esc(a.submittedAt) + '</td><td>' + a.score + '/' + a.total + ' (' + a.percentage + '%)</td></tr>').join('') + '</table>' : '<p class="muted">まだ受験していません</p>')
       + '<p>' + (h.canAnalyzeWeakness ? '<button id="weakBtn">弱点分析を実行</button>' : '<span class="muted">弱点分析は ' + h.minAttemptsForWeakness + ' 回以上受験すると利用できます (現在 ' + rows.length + ' 回)</span>') + '</p><div id="weak"></div></div>';
     if (h.canAnalyzeWeakness) $('#weakBtn').onclick = async () => {
       $('#weakBtn').disabled = true; $('#weakBtn').textContent = '分析中...';
-      try { renderWeakness(await api('/kakomon/users/' + userId + '/weakness', { method:'POST' })); } catch (e) { alert(e.message); } finally { $('#weakBtn').disabled = false; $('#weakBtn').textContent = '弱点分析を実行'; }
+      try { renderWeakness(await api('/kakomon/me/weakness', { method:'POST' })); } catch (e) { alert(e.message); } finally { $('#weakBtn').disabled = false; $('#weakBtn').textContent = '弱点分析を実行'; }
     };
     window.scrollTo({ top: $('#history').offsetTop, behavior: 'smooth' });
-  } catch (e) { alert(e.message); }
+  } catch (e) { if (e.status === 401) { me = null; renderAuth('login'); } alert(e.message); }
 }
-$('#histBtn').onclick = showHistory;
 
 function renderWeakness(w) {
   const pct = x => Math.round(x * 100) + '%';
@@ -133,6 +183,8 @@ function renderWeakness(w) {
     + w.weakTopics.map(t => '<tr><td>' + esc(t.domain) + '</td><td>' + esc(t.topic) + '</td><td class="ng">' + pct(t.accuracy) + '</td><td>' + t.attempted + '</td><td>' + t.priority + '</td></tr>').join('') + '</table>'
     + '<h4>設問の型ごとの正答率</h4><table>' + w.byQuestionType.map(t => '<tr><td>' + esc(t.questionType) + '</td><td>' + pct(t.accuracy) + '</td><td class="muted">' + t.attempted + '問</td></tr>').join('') + '</table>';
 }
+
+init();
 </script>
 </body>
 </html>`

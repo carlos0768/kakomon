@@ -4,13 +4,26 @@ import { config } from '../config.ts'
 import { createAttempt, getAttempt, getExam, getWeaknessReport, listAttempts, listExams, listSpecs, updateExamStatus } from '../db/repo.ts'
 import { answerSchema } from '../schemas/grading.ts'
 import { toPublicQuestion } from '../schemas/exam.ts'
+import {
+  AuthError,
+  authenticate,
+  clearSessionCookie,
+  createSession,
+  deleteSession,
+  getUserBySession,
+  readCookie,
+  registerUser,
+  SESSION_COOKIE,
+  sessionCookie,
+  type User,
+} from '../services/auth.ts'
 import { MIN_ATTEMPTS_FOR_WEAKNESS } from '../services/weakness.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
 import { userUiHtml } from './ui.ts'
 
 /**
  * HTTP ルート。
- * - /kakomon/*        … 受験者向け (公開済み予想問題の閲覧・解答・添削・弱点分析)。正解は返さない。
+ * - /kakomon/*        … 受験者向け。ユーザー名+パスワードの簡易アカウント (Cookie セッション)。正解は返さない。
  * - /kakomon/admin/*  … 管理者向け (下書きの承認など)。KAKOMON_ADMIN_TOKEN があれば Bearer 認証。
  * 作問・分析そのものは Mastra 標準の /api/workflows/* (Studio) か CLI から実行する。
  */
@@ -21,6 +34,22 @@ const adminAuth = async (c: any, next: () => Promise<void>) => {
     if (auth !== `Bearer ${config.adminToken}`) return c.json({ error: 'unauthorized' }, 401)
   }
   await next()
+}
+
+/** Cookie のセッションからログイン中の受験者を取り出す */
+async function currentUser(c: any): Promise<User | undefined> {
+  return getUserBySession(readCookie(c.req.header('cookie'), SESSION_COOKIE))
+}
+
+function isSecureRequest(c: any): boolean {
+  const proto = c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')
+  return proto === 'https'
+}
+
+const credentialsSchema = z.object({ username: z.string().min(1), password: z.string().min(1) })
+
+function publicUser(u: User) {
+  return { userId: u.id, username: u.username }
 }
 
 export const apiRoutes = [
@@ -40,6 +69,59 @@ export const apiRoutes = [
     method: 'GET',
     requiresAuth: false,
     handler: async c => c.html(userUiHtml()),
+  }),
+
+  // ---- アカウント: 登録 / ログイン / ログアウト / 自分 ----
+  registerApiRoute('/kakomon/auth/register', {
+    method: 'POST',
+    requiresAuth: false,
+    handler: async c => {
+      const body = credentialsSchema.safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: 'ユーザー名とパスワードを入力してください' }, 400)
+      try {
+        const user = await registerUser(body.data.username, body.data.password)
+        const session = await createSession(user.id)
+        c.header('Set-Cookie', sessionCookie(session.token, session.expiresAt, isSecureRequest(c)))
+        return c.json(publicUser(user), 201)
+      } catch (err) {
+        if (err instanceof AuthError) return c.json({ error: err.message }, err.status)
+        throw err
+      }
+    },
+  }),
+  registerApiRoute('/kakomon/auth/login', {
+    method: 'POST',
+    requiresAuth: false,
+    handler: async c => {
+      const body = credentialsSchema.safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: 'ユーザー名とパスワードを入力してください' }, 400)
+      try {
+        const user = await authenticate(body.data.username, body.data.password)
+        const session = await createSession(user.id)
+        c.header('Set-Cookie', sessionCookie(session.token, session.expiresAt, isSecureRequest(c)))
+        return c.json(publicUser(user))
+      } catch (err) {
+        if (err instanceof AuthError) return c.json({ error: err.message }, err.status)
+        throw err
+      }
+    },
+  }),
+  registerApiRoute('/kakomon/auth/logout', {
+    method: 'POST',
+    requiresAuth: false,
+    handler: async c => {
+      await deleteSession(readCookie(c.req.header('cookie'), SESSION_COOKIE))
+      c.header('Set-Cookie', clearSessionCookie(isSecureRequest(c)))
+      return c.json({ ok: true })
+    },
+  }),
+  registerApiRoute('/kakomon/auth/me', {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async c => {
+      const user = await currentUser(c)
+      return user ? c.json(publicUser(user)) : c.json({ error: 'not logged in' }, 401)
+    },
   }),
 
   // ---- 公開済み予想問題の一覧 ----
@@ -92,30 +174,34 @@ export const apiRoutes = [
     },
   }),
 
-  // ---- 受験開始 ----
+  // ---- 受験開始 (要ログイン) ----
   registerApiRoute('/kakomon/attempts', {
     method: 'POST',
     requiresAuth: false,
     handler: async c => {
-      const body = z.object({ userId: z.string().min(1), examId: z.string().min(1) }).safeParse(await c.req.json())
+      const user = await currentUser(c)
+      if (!user) return c.json({ error: 'ログインしてください' }, 401)
+      const body = z.object({ examId: z.string().min(1) }).safeParse(await c.req.json().catch(() => ({})))
       if (!body.success) return c.json({ error: body.error.issues }, 400)
       const rec = await getExam(body.data.examId)
       if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.json({ error: 'exam not found' }, 404)
-      const attempt = await createAttempt(body.data)
+      const attempt = await createAttempt({ userId: user.id, examId: rec.id })
       return c.json({ attemptId: attempt.id, examId: attempt.examId, startedAt: attempt.startedAt })
     },
   }),
 
-  // ---- 解答提出 → 添削 ----
+  // ---- 解答提出 → 添削 (本人のみ) ----
   registerApiRoute('/kakomon/attempts/:attemptId/submit', {
     method: 'POST',
     requiresAuth: false,
     handler: async c => {
+      const user = await currentUser(c)
+      if (!user) return c.json({ error: 'ログインしてください' }, 401)
       const attemptId = c.req.param('attemptId')
-      const body = z.object({ answers: z.array(answerSchema) }).safeParse(await c.req.json())
+      const body = z.object({ answers: z.array(answerSchema) }).safeParse(await c.req.json().catch(() => ({})))
       if (!body.success) return c.json({ error: body.error.issues }, 400)
       const attempt = await getAttempt(attemptId)
-      if (!attempt) return c.json({ error: 'attempt not found' }, 404)
+      if (!attempt || attempt.userId !== user.id) return c.json({ error: 'attempt not found' }, 404)
       if (attempt.status === 'submitted') return c.json({ error: 'already submitted', result: attempt.result }, 409)
       const mastra = c.get('mastra')
       const run = await mastra.getWorkflow('gradeAttemptWorkflow').createRun()
@@ -125,23 +211,27 @@ export const apiRoutes = [
     },
   }),
 
-  // ---- 採点結果の再取得 ----
+  // ---- 採点結果の再取得 (本人のみ) ----
   registerApiRoute('/kakomon/attempts/:attemptId', {
     method: 'GET',
     requiresAuth: false,
     handler: async c => {
+      const user = await currentUser(c)
+      if (!user) return c.json({ error: 'ログインしてください' }, 401)
       const attempt = await getAttempt(c.req.param('attemptId'))
-      if (!attempt) return c.json({ error: 'attempt not found' }, 404)
+      if (!attempt || attempt.userId !== user.id) return c.json({ error: 'attempt not found' }, 404)
       return c.json(attempt)
     },
   }),
 
-  // ---- 受験履歴 ----
-  registerApiRoute('/kakomon/users/:userId/attempts', {
+  // ---- 自分の受験履歴 ----
+  registerApiRoute('/kakomon/me/attempts', {
     method: 'GET',
     requiresAuth: false,
     handler: async c => {
-      const attempts = await listAttempts(c.req.param('userId'))
+      const user = await currentUser(c)
+      if (!user) return c.json({ error: 'ログインしてください' }, 401)
+      const attempts = await listAttempts(user.id)
       return c.json({
         attempts: attempts.map(a => ({
           attemptId: a.id,
@@ -158,28 +248,31 @@ export const apiRoutes = [
     },
   }),
 
-  // ---- 弱点分析 (2 回以上の受験が必要) ----
-  registerApiRoute('/kakomon/users/:userId/weakness', {
+  // ---- 自分の弱点分析 (2 回以上の受験が必要) ----
+  registerApiRoute('/kakomon/me/weakness', {
     method: 'POST',
     requiresAuth: false,
     handler: async c => {
-      const userId = c.req.param('userId')
-      const submitted = (await listAttempts(userId, 'submitted')).length
+      const user = await currentUser(c)
+      if (!user) return c.json({ error: 'ログインしてください' }, 401)
+      const submitted = (await listAttempts(user.id, 'submitted')).length
       if (submitted < MIN_ATTEMPTS_FOR_WEAKNESS) {
         return c.json({ error: `弱点分析には ${MIN_ATTEMPTS_FOR_WEAKNESS} 回以上の受験が必要です`, attempts: submitted }, 400)
       }
       const mastra = c.get('mastra')
       const run = await mastra.getWorkflow('weaknessWorkflow').createRun()
-      const res = await run.start({ inputData: { userId } })
+      const res = await run.start({ inputData: { userId: user.id } })
       if (res.status !== 'success') return c.json({ error: 'analysis failed', status: res.status }, 500)
       return c.json(res.result)
     },
   }),
-  registerApiRoute('/kakomon/users/:userId/weakness', {
+  registerApiRoute('/kakomon/me/weakness', {
     method: 'GET',
     requiresAuth: false,
     handler: async c => {
-      const report = await getWeaknessReport(c.req.param('userId'))
+      const user = await currentUser(c)
+      if (!user) return c.json({ error: 'ログインしてください' }, 401)
+      const report = await getWeaknessReport(user.id)
       return report ? c.json(report) : c.json({ error: 'no report yet' }, 404)
     },
   }),
