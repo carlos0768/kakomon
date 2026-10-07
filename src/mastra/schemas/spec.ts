@@ -81,6 +81,10 @@ export const examSpecSchema = z.object({
   ),
   /** 分析に使った過去問 */
   sourceExamIds: z.array(z.string()),
+  /** ネット検索で参照した出典 (公開されている傾向分析・公式の出題範囲など) */
+  sources: z
+    .array(z.object({ title: z.string(), url: z.string(), note: z.string().optional().describe('何に使ったか') }))
+    .default([]),
 })
 export type ExamSpec = z.infer<typeof examSpecSchema>
 
