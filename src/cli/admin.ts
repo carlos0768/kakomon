@@ -15,7 +15,7 @@
  */
 import { writeFile } from 'node:fs/promises'
 import { mastra } from '../mastra/index.ts'
-import { anthropicOptions } from '../mastra/config.ts'
+import { anthropicOptions, config } from '../mastra/config.ts'
 import { getExam, getSpec, listExams, listSpecs, saveExam } from '../mastra/db/repo.ts'
 import { renderExamFiles } from '../mastra/render/pdf.ts'
 import { adminApprovalStep } from '../mastra/workflows/generate-exam.workflow.ts'
@@ -122,7 +122,7 @@ async function main() {
       if (res.status === 'success') {
         const spec = await getSpec(res.result.specId)
         if (spec) {
-          const out = `docs/specs/${spec.id}.md`
+          const out = `${config.projectRoot}/docs/specs/${spec.id}.md`
           await writeFile(out, specToMarkdown(spec.spec, spec.id), 'utf8').catch(() => undefined)
           console.log(`要件定義 (Markdown): ${out}`)
         }

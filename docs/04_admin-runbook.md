@@ -2,15 +2,31 @@
 
 予想問題を作る主体は管理者。受験者は公開済みの問題を選んで解くだけ。
 
-## 0. セットアップ
+管理作業は **ブラウザの管理画面 (`/kakomon/admin`)** で行う。コマンドラインは起動と非常時だけ。
+
+## 0. セットアップ (1 回だけ)
 
 ```bash
 npm install
-cp .env.example .env     # ANTHROPIC_API_KEY を設定
-# (任意) PDF 出力したい場合: npx playwright install chromium
+cp .env.example .env     # ANTHROPIC_API_KEY と KAKOMON_DB_URL (Supabase の pooler URI) を設定
+npm run dev              # http://localhost:4111/kakomon/admin を開く
 ```
 
-Node.js 22.18 以降が必要 (TypeScript を直接実行する)。
+- 手元の `.env` を本番と同じ Supabase に向けると、ここで承認した問題がそのままサイト (Vercel) に出る。
+- Vercel 上にも同じ管理画面 (`https://<project>.vercel.app/kakomon/admin`) があり、`KAKOMON_ADMIN_TOKEN` でログインする。ただし取り込み・作問は数分かかるので、Vercel の関数時間上限 (300 秒) に当たりやすい。**重い作業は手元の `npm run dev` で開いた管理画面から行う**のが確実。
+- PDF も出したい場合は `npx playwright install chromium` を 1 回実行 (無くても HTML は出る)。
+
+## 管理画面の流れ
+
+| 画面の節 | やること |
+|---|---|
+| 1. 過去問 | PDF を選んで「アップロードして取り込む」。数分後に「ジョブ」が success になり、一覧に設問数と正解の有無が出る。正解が足りなければ「正解を推定」 |
+| 2. 要件定義 | 「分析を実行」。できた要件定義は「内容を見る」で確認。違和感があれば追加指示を入れて再実行 |
+| 3. 予想問題 | 要件定義とタイトルを選んで「作問を開始」。承認待ちになったら「内容を確認 (正解つき)」→「承認して公開」または「却下」。公開/非公開の切替もここ |
+| ジョブ | 取り込み・分析・作問・正解推定の進行状況と結果。失敗時はエラー内容が出る |
+| ユーザー | 受験者一覧とパスワード再設定 |
+
+以下はコマンドラインで同じことをする場合の手順。
 
 ## 1. 過去問 PDF を登録する
 

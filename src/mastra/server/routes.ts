@@ -21,6 +21,15 @@ import {
 import { MIN_ATTEMPTS_FOR_WEAKNESS } from '../services/weakness.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
 import { userUiHtml } from './ui.ts'
+import { adminUiHtml } from './admin-ui.ts'
+import { getJob, listJobs, resumeGenerateJob, startSolveJob, startWorkflowJob } from '../services/jobs.ts'
+import { listUsers, resetPassword } from '../services/auth.ts'
+import { getSpec } from '../db/repo.ts'
+import { specToMarkdown } from '../services/spec-markdown.ts'
+import { renderExamHtml } from '../render/html.ts'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 /**
  * HTTP ルート。
@@ -306,24 +315,215 @@ export const apiRoutes = [
     },
   }),
 
-  // ---- 管理者: 要件定義・下書き一覧 ----
-  registerApiRoute('/kakomon/admin/specs', {
+  // ======================= 管理者 =======================
+  // 管理画面 (静的 1 ページ)。API 呼び出し時に Bearer トークンを付ける
+  registerApiRoute('/kakomon/admin', {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async c => c.html(adminUiHtml()),
+  }),
+
+  // ---- 認証確認 (トークンが合っているか) ----
+  registerApiRoute('/kakomon/admin/whoami', {
     method: 'GET',
     middleware: [adminAuth],
-    handler: async c => c.json({ specs: await listSpecs() }),
+    handler: async c => c.json({ ok: true, authRequired: Boolean(config.adminToken), dbDialect: config.dbDialect, serverless: config.isServerless }),
   }),
+
+  // ---- 過去問・予想問題の一覧 / 詳細 ----
   registerApiRoute('/kakomon/admin/exams', {
     method: 'GET',
     middleware: [adminAuth],
     handler: async c => {
       const exams = await listExams()
       return c.json({
-        exams: exams.map(e => ({ examId: e.id, kind: e.kind, status: e.status, title: e.title, year: e.year, questionCount: e.exam.questions.length, specId: e.specId })),
+        exams: exams.map(e => ({
+          examId: e.id,
+          kind: e.kind,
+          status: e.status,
+          title: e.title,
+          year: e.year,
+          session: e.session,
+          questionCount: e.exam.questions.length,
+          answeredCount: e.exam.questions.filter(q => q.correctLabel).length,
+          specId: e.specId,
+          extractionNotes: e.exam.extractionNotes,
+          updatedAt: e.updatedAt,
+        })),
       })
     },
   }),
+  registerApiRoute('/kakomon/admin/exams/:examId/preview', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec) return c.text('not found', 404)
+      return c.html(renderExamHtml(rec.exam, { withAnswers: c.req.query('answers') !== '0' }))
+    },
+  }),
+  registerApiRoute('/kakomon/admin/exams/:examId/status', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z.object({ status: z.enum(['draft', 'review', 'published', 'archived']) }).safeParse(await c.req.json())
+      if (!body.success) return c.json({ error: body.error.issues }, 400)
+      await updateExamStatus(c.req.param('examId'), body.data.status)
+      return c.json({ ok: true })
+    },
+  }),
+  registerApiRoute('/kakomon/admin/exams/:examId/solve', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec) return c.json({ error: 'exam not found' }, 404)
+      const job = await startSolveJob(c.get('mastra'), rec.id, `正解推定: ${rec.title}`)
+      return c.json({ job })
+    },
+  }),
 
-  // ---- 管理者: 承認待ちワークフローの resume ----
+  // ---- 過去問 PDF のアップロード → 取り込みジョブ ----
+  registerApiRoute('/kakomon/admin/upload', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = await c.req.parseBody()
+      const file = body['file']
+      if (!(file instanceof File)) return c.json({ error: 'PDF ファイルを選択してください' }, 400)
+      if (file.size > 32 * 1024 * 1024) return c.json({ error: 'PDF は 32MB 以下にしてください' }, 400)
+      const uploadDir = config.uploadDir
+      await mkdir(uploadDir, { recursive: true })
+      const safeName = file.name.replace(/[^\w.\-\u3000-\u9fff]/g, '_')
+      const filePath = path.join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeName}`)
+      await writeFile(filePath, Buffer.from(await file.arrayBuffer()))
+      const title = typeof body['title'] === 'string' && body['title'] ? body['title'] : undefined
+      const year = typeof body['year'] === 'string' && body['year'] ? Number(body['year']) : undefined
+      const session = typeof body['session'] === 'string' && body['session'] ? body['session'] : undefined
+      const job = await startWorkflowJob(c.get('mastra'), 'ingest', `取り込み: ${title ?? file.name}${year ? ` (${year})` : ''}`, {
+        filePath,
+        kind: 'past',
+        title,
+        year: Number.isFinite(year) ? year : undefined,
+        session,
+      })
+      return c.json({ job })
+    },
+  }),
+
+  // ---- 要件定義 ----
+  registerApiRoute('/kakomon/admin/specs', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const specs = await listSpecs()
+      return c.json({
+        specs: specs.map(s => ({
+          specId: s.id,
+          title: s.title,
+          status: s.status,
+          summary: s.spec.summary,
+          questionCount: s.spec.format.questionCount,
+          domains: s.spec.domains.map(d => ({ domain: d.domain, share: d.share })),
+          sourceExamIds: s.spec.sourceExamIds,
+          createdAt: s.createdAt,
+        })),
+      })
+    },
+  }),
+  registerApiRoute('/kakomon/admin/specs/:specId/markdown', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getSpec(c.req.param('specId'))
+      if (!rec) return c.text('not found', 404)
+      return c.text(specToMarkdown(rec.spec, rec.id))
+    },
+  }),
+  registerApiRoute('/kakomon/admin/analyze', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z
+        .object({ title: z.string().optional(), focus: z.string().optional(), examIds: z.array(z.string()).optional(), specId: z.string().optional() })
+        .safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: body.error.issues }, 400)
+      const job = await startWorkflowJob(c.get('mastra'), 'analyze', `傾向分析${body.data.title ? `: ${body.data.title}` : ''}`, body.data)
+      return c.json({ job })
+    },
+  }),
+
+  // ---- 予想問題の生成 / 承認 ----
+  registerApiRoute('/kakomon/admin/generate', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z
+        .object({
+          specId: z.string().min(1),
+          title: z.string().min(1),
+          referenceExamId: z.string().optional(),
+          questionCount: z.number().int().min(1).optional(),
+          instructions: z.string().optional(),
+          maxRevisions: z.number().int().min(0).max(3).default(1),
+        })
+        .safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: body.error.issues }, 400)
+      const job = await startWorkflowJob(c.get('mastra'), 'generate', `作問: ${body.data.title}`, body.data)
+      return c.json({ job })
+    },
+  }),
+  registerApiRoute('/kakomon/admin/jobs', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => c.json({ jobs: await listJobs() }),
+  }),
+  registerApiRoute('/kakomon/admin/jobs/:jobId', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const job = await getJob(c.req.param('jobId'))
+      return job ? c.json({ job }) : c.json({ error: 'job not found' }, 404)
+    },
+  }),
+  registerApiRoute('/kakomon/admin/jobs/:jobId/approve', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z.object({ approved: z.boolean(), note: z.string().optional() }).safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: body.error.issues }, 400)
+      try {
+        const job = await resumeGenerateJob(c.get('mastra'), c.req.param('jobId'), body.data)
+        return c.json({ job })
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400)
+      }
+    },
+  }),
+
+  // ---- 受験者アカウント管理 ----
+  registerApiRoute('/kakomon/admin/users', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => c.json({ users: await listUsers() }),
+  }),
+  registerApiRoute('/kakomon/admin/users/:username/reset-password', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z.object({ password: z.string().min(1) }).safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: body.error.issues }, 400)
+      try {
+        await resetPassword(c.req.param('username'), body.data.password)
+        return c.json({ ok: true })
+      } catch (err) {
+        if (err instanceof AuthError) return c.json({ error: err.message }, err.status)
+        throw err
+      }
+    },
+  }),
+
+  // ---- 互換: 旧 runId ベースの承認 (CLI と同じ) ----
   registerApiRoute('/kakomon/admin/runs/:runId/approve', {
     method: 'POST',
     middleware: [adminAuth],
@@ -334,18 +534,6 @@ export const apiRoutes = [
       const run = await mastra.getWorkflow('generateExamWorkflow').createRun({ runId: c.req.param('runId') })
       const res = await run.resume({ step: adminApprovalStep, resumeData: body.data })
       return c.json({ status: res.status, result: res.status === 'success' ? res.result : undefined })
-    },
-  }),
-
-  // ---- 管理者: 公開/非公開の切替 ----
-  registerApiRoute('/kakomon/admin/exams/:examId/status', {
-    method: 'POST',
-    middleware: [adminAuth],
-    handler: async c => {
-      const body = z.object({ status: z.enum(['draft', 'review', 'published', 'archived']) }).safeParse(await c.req.json())
-      if (!body.success) return c.json({ error: body.error.issues }, 400)
-      await updateExamStatus(c.req.param('examId'), body.data.status)
-      return c.json({ ok: true })
     },
   }),
 ]

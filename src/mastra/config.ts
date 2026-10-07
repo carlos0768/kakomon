@@ -1,9 +1,27 @@
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 /**
  * 環境変数から読み込む設定。
  * 既定モデルは Claude Opus 5.5 (Mastra model router 形式 `anthropic/claude-opus-5-5`)。
  */
+/**
+ * プロジェクトルート。`mastra dev` はバンドル先に cwd を移すため、process.cwd() は当てにならない。
+ * package.json と src/mastra を持つディレクトリを上に辿って探す (KAKOMON_ROOT で明示も可)。
+ * サーバレス環境では見つからないので /tmp を使う。
+ */
+export function findProjectRoot(): string {
+  if (process.env.KAKOMON_ROOT) return path.resolve(process.env.KAKOMON_ROOT)
+  let dir = process.cwd()
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(path.join(dir, 'package.json')) && existsSync(path.join(dir, 'src', 'mastra'))) return dir
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return isServerless() ? '/tmp/kakomon' : process.cwd()
+}
+
 export const config = {
   /** 作問・分析など重い処理に使うモデル */
   model: process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
@@ -23,8 +41,12 @@ export const config = {
   embeddingModel: process.env.EMBEDDING_MODEL,
   /** 管理者 API を保護するトークン (未設定なら未保護: ローカル開発用) */
   adminToken: process.env.KAKOMON_ADMIN_TOKEN,
+  /** プロジェクトルート (data/ や docs/specs の基準) */
+  projectRoot: findProjectRoot(),
   /** 生成物 (HTML/PDF) の出力先 */
-  outDir: path.resolve(process.cwd(), process.env.KAKOMON_OUT_DIR ?? 'data/out'),
+  outDir: path.resolve(findProjectRoot(), process.env.KAKOMON_OUT_DIR ?? 'data/out'),
+  /** アップロードした過去問 PDF の保存先 */
+  uploadDir: path.resolve(findProjectRoot(), 'data/past-exams'),
 }
 
 function isServerless(): boolean {
@@ -60,7 +82,7 @@ function resolveDbUrl(url: string): string {
   // Vercel などの読み取り専用 FS では /tmp にしか書けない (再起動で消える)
   if (isServerless() && isLocalFileUrl(url)) return 'file:/tmp/kakomon.db'
   if (url.startsWith('file:') && !url.startsWith('file:/')) {
-    return `file:${path.resolve(process.cwd(), url.slice('file:'.length))}`
+    return `file:${path.resolve(findProjectRoot(), url.slice('file:'.length))}`
   }
   return url
 }

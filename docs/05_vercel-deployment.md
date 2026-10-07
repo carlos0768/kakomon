@@ -6,9 +6,11 @@ Vercel のフレームワーク一覧で **Mastra** を選んでインポート�
 
 | 場所 | 担当 |
 |---|---|
-| Vercel (サーバレス関数) | 受験者向け: 問題の閲覧・解答・添削・弱点分析 (`/kakomon/*`)。管理者向け Studio (`/`) と管理者 API |
+| Vercel (サーバレス関数) | 受験者向け: 問題の閲覧・解答・添削・弱点分析 (`/kakomon/*`)。管理画面 (`/kakomon/admin`)、Studio (`/`)、管理者 API |
 | Supabase (PostgreSQL) | すべてのデータ (過去問・要件定義・予想問題・解答履歴・Mastra のワークフロー状態) |
 | 手元の PC (CLI) | 過去問 PDF の取り込み、傾向分析、作問、PDF 出力。同じ Supabase DB を指して実行する |
+
+Vercel 上の管理画面でも取り込み・分析・作問は起動できるが、関数の実行時間上限 (300 秒) を超えると途中で止まる。**取り込みと作問は手元の `npm run dev` で開いた管理画面から行う**のが確実 (同じ Supabase を見ているので結果はそのままサイトに出る)。承認・公開切替・ユーザー管理は Vercel 上の管理画面で問題ない。
 
 Vercel 上では **PDF 生成はできない** (Chromium が無い)。受験者には `/kakomon/exams/:id/print` の HTML 版を配信し、PDF が必要なら手元で `npm run admin -- render <examId>` を実行する。`ingest` もローカルのファイルパスを読むので手元で実行する。
 
