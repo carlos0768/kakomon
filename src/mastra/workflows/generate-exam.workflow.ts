@@ -66,12 +66,14 @@ const generateStep = createStep({
 - 選択肢ラベルは参照過去問と同じ表記 (例: ${reference?.exam.questions[0]?.choices.map(c => c.label).join(' ') ?? '1 2 3 4'})
 ${inputData.instructions ? `- 管理者からの指示: ${inputData.instructions}` : ''}`
 
+    // 生成・校閲はツールを持ち、スキーマも大きい。ネイティブ構造化出力だと Anthropic が
+    // "The compiled grammar is too large" で拒否するため、スキーマはプロンプトに注入する (jsonPromptInjection: true)
     let generated = generatedExamSchema.parse(
       await streamObject(
         generator,
         basePrompt,
         {
-          structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: 'auto' },
+          structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: true },
           maxSteps: 60,
           modelSettings: { maxOutputTokens: 64000 },
           providerOptions: anthropicOptions('xhigh'),
@@ -99,7 +101,7 @@ ${JSON.stringify(generated)}
 校閲者から次の指摘がありました。指摘された設問を修正し (必要なら差し替え)、指摘のない設問は原則そのまま残して、完全な 1 回分を再出力してください。
 ${issues}`,
           {
-            structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: 'auto' },
+            structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: true },
             maxSteps: 60,
             modelSettings: { maxOutputTokens: 64000 },
             providerOptions: anthropicOptions('xhigh'),
@@ -121,7 +123,7 @@ ${issues}`,
 予想問題 (JSON):
 ${JSON.stringify(generated)}`,
         {
-          structuredOutput: { schema: reviewResultSchema, jsonPromptInjection: 'auto' },
+          structuredOutput: { schema: reviewResultSchema, jsonPromptInjection: true },
           maxSteps: 40,
           modelSettings: { maxOutputTokens: 16000 },
           providerOptions: anthropicOptions('high'),

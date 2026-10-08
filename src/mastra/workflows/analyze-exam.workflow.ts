@@ -43,7 +43,9 @@ ${inputData.focus ? `\n管理者からの指示: ${inputData.focus}` : ''}
 
 sourceExamIds には上記の examId をすべて入れてください。`,
       {
-        structuredOutput: { schema: examSpecSchema, jsonPromptInjection: 'auto' },
+        // ツール 7 個 + 大きなスキーマをネイティブ構造化出力にすると Anthropic が
+        // "The compiled grammar is too large" で拒否するため、スキーマはプロンプトに注入する
+        structuredOutput: { schema: examSpecSchema, jsonPromptInjection: true },
         maxSteps: 40,
         modelSettings: { maxOutputTokens: 32000 },
         providerOptions: anthropicOptions('high'),
