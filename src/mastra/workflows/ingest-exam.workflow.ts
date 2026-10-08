@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { anthropicOptions } from '../config.ts'
 import { saveExam } from '../db/repo.ts'
 import { extractedExamSchema } from '../schemas/exam.ts'
+import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
 import { indexExamForVectorSearch } from '../tools/vector-search.ts'
 
 /**
@@ -28,16 +29,20 @@ const extractStep = createStep({
     input: inputSchema,
     exam: extractedExamSchema,
   }),
-  execute: async ({ inputData, mastra }) => {
+  execute: async ({ inputData, mastra, requestContext }) => {
     const abs = path.resolve(inputData.filePath)
     const pdf = await readFile(abs)
     const agent = mastra.getAgentById('exam-extractor')
+    const progress = progressReporter(jobIdFrom(requestContext), 'PDF をモデルに送信中')
+    await progress.flush()
     const hints = [
       inputData.title && `試験名: ${inputData.title}`,
       inputData.year && `年度: ${inputData.year}`,
       inputData.session && `回次: ${inputData.session}`,
     ].filter(Boolean)
-    const result = await agent.generate(
+    // 出力が長い (数万トークン) ので stream で受け、進捗 (出力文字数・設問数) を jobs に書く。
+    // 転記作業なので思考は medium で十分。巨大な PDF を何度も再送しないよう再試行は 1 回まで。
+    const stream = await agent.stream(
       [
         {
           role: 'user',
@@ -52,11 +57,37 @@ const extractStep = createStep({
       ],
       {
         structuredOutput: { schema: extractedExamSchema, jsonPromptInjection: 'auto' },
-        modelSettings: { maxOutputTokens: 64000 },
-        providerOptions: anthropicOptions('high'),
+        modelSettings: { maxOutputTokens: 64000, maxRetries: 1 },
+        providerOptions: anthropicOptions('medium'),
       },
     )
-    const exam = extractedExamSchema.parse(result.object)
+    let started = false
+    let questionCount = 0
+    for await (const chunk of stream.fullStream) {
+      if (chunk.type === 'text-delta') {
+        if (!started) {
+          started = true
+          await progress.setPhase('設問を読み取り中')
+        }
+        const text = chunk.payload.text
+        // "number": が出るたびに設問 1 件分が始まったとみなす (目安)
+        const n = (text.match(/"number"\s*:/g) ?? []).length
+        if (n) questionCount += n
+        progress.tick(text.length, questionCount ? `設問 ${questionCount} 件目まで出力` : undefined)
+      } else if (chunk.type === 'error') {
+        throw chunk.payload.error instanceof Error ? chunk.payload.error : new Error(String((chunk.payload.error as { message?: string })?.message ?? chunk.payload.error))
+      }
+    }
+    await progress.setPhase('読み取り結果を検証中', `${progress.outputChars.toLocaleString()} 文字`)
+    const exam = extractedExamSchema.parse(await stream.object)
+    // passageId が passages に無い設問は参照を外して注意として残す
+    const ids = new Set(exam.passages.map(p => p.id))
+    for (const q of exam.questions) {
+      if (q.passageId && !ids.has(q.passageId)) {
+        exam.extractionNotes.push(`問${q.number}: 資料文 ${q.passageId} が見つからない`)
+        q.passageId = undefined
+      }
+    }
     if (inputData.title) exam.title = inputData.title
     if (inputData.year) exam.year = inputData.year
     if (inputData.session) exam.session = inputData.session
@@ -75,7 +106,9 @@ const saveStep = createStep({
     indexedVectors: z.number().int(),
     extractionNotes: z.array(z.string()),
   }),
-  execute: async ({ inputData }) => {
+  execute: async ({ inputData, requestContext }) => {
+    const progress = progressReporter(jobIdFrom(requestContext), '設問を保存中')
+    await progress.flush()
     const rec = await saveExam({
       id: inputData.input.examId,
       kind: inputData.input.kind,

@@ -1,4 +1,4 @@
-import type { ExtractedExam, LayoutProfile, Question } from '../schemas/exam.ts'
+import { resolvePassage, type ExtractedExam, type LayoutProfile, type Question } from '../schemas/exam.ts'
 
 /**
  * レイアウトプロファイルに従って、過去問の見た目を模した HTML を生成する。
@@ -64,7 +64,17 @@ export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): s
   const pageSize = `${PAPER[L.paperSize]}${L.orientation === 'landscape' ? ' landscape' : ''}`
   const vertical = L.writingMode === 'vertical'
 
-  const questionsHtml = exam.questions.map(q => renderQuestion(q, L, opts)).join('\n')
+  // 共有資料文は、それを参照する最初の設問の前に 1 回だけ印字する (原本と同じ並び)
+  let prevPassage: string | undefined
+  const questionsHtml = exam.questions
+    .map(q => {
+      const passage = resolvePassage(q, exam.passages)
+      const showPassage = Boolean(passage) && passage !== prevPassage
+      prevPassage = passage
+      const shared = q.passageId ? exam.passages.find(p => p.id === q.passageId) : undefined
+      return renderQuestion(q, L, opts, showPassage ? { text: passage!, title: shared?.title } : undefined)
+    })
+    .join('\n')
   const header = L.headerText ?? [exam.title, exam.year ? `${exam.year}年度` : '', exam.session ?? ''].filter(Boolean).join('　')
 
   return `<!doctype html>
@@ -90,7 +100,8 @@ export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): s
   .questions { column-count: ${L.columns}; column-gap: 8mm; ${L.columns > 1 ? 'column-rule: 1px solid #999;' : ''} }
   .q { break-inside: avoid; margin-bottom: 12pt; }
   .q .num { font-weight: bold; margin-${vertical ? 'bottom' : 'right'}: 0.5em; }
-  .q .passage { border-left: 2px solid #666; padding-left: 8pt; margin: 4pt 0 6pt; white-space: pre-wrap; }
+  .passage { border-left: 2px solid #666; padding-left: 8pt; margin: 6pt 0 8pt; white-space: pre-wrap; break-inside: avoid-column; }
+  .passage-title { font-weight: bold; margin-bottom: 3pt; }
   .choices { margin: 4pt 0 0; padding: 0; list-style: none; }
   .choices.inline li { display: inline-block; margin-right: 1.5em; }
   .choices li { margin: 2pt 0; }
@@ -118,7 +129,7 @@ ${L.footerText ? `<footer class="exam-footer">${escapeHtml(L.footerText)}</foote
 </html>`
 }
 
-function renderQuestion(q: Question, L: LayoutProfile, opts: RenderOptions): string {
+function renderQuestion(q: Question, L: LayoutProfile, opts: RenderOptions, passage?: { text: string; title?: string }): string {
   const num = formatQuestionNumber(q.number, L.questionNumberFormat)
   const choices = q.choices
     .map(
@@ -133,9 +144,11 @@ function renderQuestion(q: Question, L: LayoutProfile, opts: RenderOptions): str
           .map(c => `<span class="r">${escapeHtml(formatChoiceLabel(c.label, L.choiceLabelStyle))}: ${nl2br(c.rationale!)}</span>`)
           .join('')}</div>`
       : ''
-  return `<article class="q" id="q${q.number}">
+  const passageHtml = passage
+    ? `<section class="passage">${passage.title ? `<div class="passage-title">${escapeHtml(passage.title)}</div>` : ''}${nl2br(passage.text)}</section>\n  `
+    : ''
+  return `${passageHtml}<article class="q" id="q${q.number}">
   <div><span class="num">${escapeHtml(num)}</span>${nl2br(q.stem)}</div>
-  ${q.passage ? `<div class="passage">${nl2br(q.passage)}</div>` : ''}
   <ul class="choices ${L.choiceLayout}">${choices}</ul>
   ${answer}
 </article>`

@@ -97,10 +97,16 @@ export const DDL = [
     input_json TEXT NOT NULL,
     result_json TEXT,
     suspend_json TEXT,
+    progress_json TEXT,
     error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+]
+
+/** 既存テーブルへの後付け列 (冪等)。libSQL は ADD COLUMN IF NOT EXISTS が無いので失敗を無視する */
+const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
+  { table: 'jobs', column: 'progress_json', ddl: 'TEXT' },
 ]
 
 export function isPostgresUrl(url: string): boolean {
@@ -191,6 +197,13 @@ export function ensureSchema(): Promise<void> {
     initialized = (async () => {
       const d = getDb()
       for (const stmt of DDL) await d.execute(stmt)
+      for (const m of COLUMN_MIGRATIONS) {
+        if (d.dialect === 'postgres') {
+          await d.execute(`ALTER TABLE ${m.table} ADD COLUMN IF NOT EXISTS ${m.column} ${m.ddl}`)
+        } else {
+          await d.execute(`ALTER TABLE ${m.table} ADD COLUMN ${m.column} ${m.ddl}`).catch(() => undefined)
+        }
+      }
     })()
   }
   return initialized

@@ -1,7 +1,7 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { aggregateQuestions, getExam, getSpec, listExams, searchQuestions } from '../db/repo.ts'
-import { questionSchema } from '../schemas/exam.ts'
+import { questionSchema, passageSchema } from '../schemas/exam.ts'
 
 /**
  * 作問 LLM が過去問に自由にアクセスするためのツール群。
@@ -57,6 +57,7 @@ export const getPastExamTool = createTool({
     title: z.string(),
     year: z.number().optional(),
     instructions: z.array(z.string()),
+    passages: z.array(passageSchema).describe('複数の設問で共有される資料文。設問の passageId が参照する'),
     questions: z.array(questionSchema),
   }),
   execute: async ({ examId, numbers }) => {
@@ -68,6 +69,7 @@ export const getPastExamTool = createTool({
       title: rec.title,
       year: rec.year,
       instructions: rec.exam.instructions,
+      passages: rec.exam.passages,
       questions: rec.exam.questions.filter(q => !set || set.has(q.number)),
     }
   },

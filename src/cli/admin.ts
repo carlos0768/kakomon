@@ -91,9 +91,10 @@ async function main() {
       })
       const agent = mastra.getAgentById('exam-reviewer')
       const res = await agent.generate(
-        `次の過去問設問について、正解の選択肢と、各選択肢が正解/不正解である根拠を示してください。確信が持てない場合は confidence を下げてください。\n\n${JSON.stringify(
-          targets.map(q => ({ number: q.number, passage: q.passage, stem: q.stem, choices: q.choices.map(c => ({ label: c.label, text: c.text })) })),
-        )}`,
+        `次の過去問設問について、正解の選択肢と、各選択肢が正解/不正解である根拠を示してください。確信が持てない場合は confidence を下げてください。\n\n${JSON.stringify({
+          passages: rec.exam.passages,
+          questions: targets.map(q => ({ number: q.number, passageId: q.passageId, passage: q.passage, stem: q.stem, choices: q.choices.map(c => ({ label: c.label, text: c.text })) })),
+        })}`,
         { structuredOutput: { schema, jsonPromptInjection: 'auto' }, modelSettings: { maxOutputTokens: 32000 }, providerOptions: anthropicOptions('high') },
       )
       const parsed = schema.parse(res.object)

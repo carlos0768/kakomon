@@ -241,9 +241,21 @@ async function loadJobs() {
     : '<p class="muted">まだありません。</p>';
   renderDrafts();
 }
+const parseTs = s => { if (!s) return NaN; const t = String(s).trim(); return Date.parse(/[zZ]$|[+-]\d\d:?\d\d$/.test(t) ? t : t.replace(' ', 'T') + 'Z'); };
+const elapsedText = ms => { if (!(ms >= 0)) return ''; const s = Math.floor(ms / 1000); return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒'; };
 function summarize(j) {
   if (j.status === 'failed') return j.error || '失敗';
-  if (j.status === 'running') return '実行中...';
+  if (j.status === 'running') {
+    const p = j.progress || {};
+    const since = parseTs(p.at || j.updatedAt || j.createdAt);
+    const stale = Number.isFinite(since) && Date.now() - since > 3 * 60 * 1000;
+    const parts = ['実行中 ' + elapsedText(Date.now() - parseTs(j.createdAt))];
+    if (p.phase) parts.push(p.phase);
+    if (p.outputChars) parts.push('出力 ' + Number(p.outputChars).toLocaleString() + ' 文字');
+    if (p.note) parts.push(p.note);
+    if (stale) parts.push('※ ' + elapsedText(Date.now() - since) + ' 更新なし。サーバ (npm run dev) が止まっていないか確認してください');
+    return parts.join(' / ');
+  }
   const r = j.result || {};
   if (j.kind === 'ingest' && r.questionCount != null) return r.questionCount + ' 問 (正解あり ' + r.answeredCount + ')' + (r.extractionNotes?.length ? ' / 注意: ' + r.extractionNotes.join(' / ') : '');
   if (j.kind === 'analyze' && r.specId) return '要件定義を作成 (' + (r.domains || []).length + ' 分野)';
