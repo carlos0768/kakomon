@@ -27,14 +27,22 @@ export async function streamObject(
   hooks: { progress?: StreamProgress; onText?: (text: string) => void } = {},
 ): Promise<unknown> {
   const stream = await agent.stream(messages, options as never)
+  let reasoningChars = 0
   for await (const chunk of stream.fullStream) {
     if (chunk.type === 'text-delta') {
       hooks.onText?.(chunk.payload.text)
       hooks.progress?.tick(chunk.payload.text.length)
+    } else if (chunk.type === 'reasoning-delta') {
+      // 思考 (要約) が流れている間も「生きている」ことを進捗に出す。出力文字数には数えない
+      reasoningChars += chunk.payload.text.length
+      hooks.progress?.tick(0, `思考中 (要約 ${reasoningChars.toLocaleString()} 文字)`)
     } else if (chunk.type === 'tool-call') {
       hooks.progress?.tick(0, `ツール ${chunk.payload.toolName} を実行中`)
     } else if (chunk.type === 'error') {
       throw toError(chunk.payload.error)
+    } else {
+      // それ以外のチャンク (step-start, tool-result, finish など) も接続が生きている証拠として扱う
+      hooks.progress?.tick(0)
     }
   }
   return await stream.object
