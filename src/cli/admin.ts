@@ -21,6 +21,7 @@ import { renderExamFiles } from '../mastra/render/pdf.ts'
 import { adminApprovalStep } from '../mastra/workflows/generate-exam.workflow.ts'
 import { specToMarkdown } from '../mastra/services/spec-markdown.ts'
 import { listUsers, registerUser, resetPassword } from '../mastra/services/auth.ts'
+import { streamObject } from '../mastra/services/llm.ts'
 import { z } from 'zod'
 
 const [, , command, ...rest] = process.argv
@@ -90,14 +91,15 @@ async function main() {
         ),
       })
       const agent = mastra.getAgentById('exam-reviewer')
-      const res = await agent.generate(
+      const raw = await streamObject(
+        agent,
         `次の過去問設問について、正解の選択肢と、各選択肢が正解/不正解である根拠を示してください。確信が持てない場合は confidence を下げてください。\n\n${JSON.stringify({
           passages: rec.exam.passages,
           questions: targets.map(q => ({ number: q.number, passageId: q.passageId, passage: q.passage, stem: q.stem, choices: q.choices.map(c => ({ label: c.label, text: c.text })) })),
         })}`,
         { structuredOutput: { schema, jsonPromptInjection: 'auto' }, modelSettings: { maxOutputTokens: 32000 }, providerOptions: anthropicOptions('high') },
       )
-      const parsed = schema.parse(res.object)
+      const parsed = schema.parse(raw)
       for (const a of parsed.answers) {
         const q = rec.exam.questions.find(q => q.number === a.number)
         if (!q) continue

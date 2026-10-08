@@ -5,6 +5,7 @@ import { getAttempt, getExam, submitAttempt } from '../db/repo.ts'
 import { resolvePassage } from '../schemas/exam.ts'
 import { answerSchema, explanationBatchSchema, gradingResultSchema } from '../schemas/grading.ts'
 import { gradeDeterministic } from '../services/grading.ts'
+import { streamObject } from '../services/llm.ts'
 
 /**
  * 添削: コードで正誤判定 → LLM が「選んだ選択肢がなぜ誤りか」を解説 → 保存。
@@ -62,7 +63,8 @@ const explainStep = createStep({
     })
 
     try {
-      const res = await agent.generate(
+      const raw = await streamObject(
+        agent,
         `試験「${inputData.examTitle}」の採点結果です。得点 ${result.score}/${result.total} (${result.percentage}%)。
 各設問について whyYourChoice / whyCorrect / tip を書き、最後に overview を書いてください。
 
@@ -74,7 +76,7 @@ ${JSON.stringify(items)}`,
           providerOptions: anthropicOptions('medium'),
         },
       )
-      const batch = explanationBatchSchema.parse(res.object)
+      const batch = explanationBatchSchema.parse(raw)
       const byQ = new Map(batch.items.map(i => [i.questionNumber, i]))
       for (const f of result.feedback) {
         const e = byQ.get(f.questionNumber)

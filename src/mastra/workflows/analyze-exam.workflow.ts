@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { anthropicOptions } from '../config.ts'
 import { listExams, saveSpec } from '../db/repo.ts'
 import { examSpecSchema } from '../schemas/spec.ts'
+import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
+import { streamObject } from '../services/llm.ts'
 
 /**
  * 出題傾向分析 → 出題要件定義 (ExamSpec) の作成。
@@ -20,7 +22,9 @@ const analyzeStep = createStep({
   id: 'analyze-trends',
   inputSchema,
   outputSchema: z.object({ input: inputSchema, spec: examSpecSchema }),
-  execute: async ({ inputData, mastra }) => {
+  execute: async ({ inputData, mastra, requestContext }) => {
+    const progress = progressReporter(jobIdFrom(requestContext), '過去問を読んで傾向を分析中')
+    await progress.flush()
     const exams = await listExams({ kind: 'past' })
     const targets = inputData.examIds?.length ? exams.filter(e => inputData.examIds!.includes(e.id)) : exams
     if (targets.length === 0) throw new Error('分析対象の過去問が登録されていません。先に ingest を実行してください')
@@ -29,7 +33,8 @@ const analyzeStep = createStep({
     const list = targets
       .map(e => `- examId=${e.id} / ${e.title} / ${e.year ?? '年度不明'} ${e.session ?? ''} / ${e.exam.questions.length}問`)
       .join('\n')
-    const result = await agent.generate(
+    const raw = await streamObject(
+      agent,
       `次の過去問を分析し、出題要件定義を作成してください。
 対象:
 ${list}
@@ -43,8 +48,9 @@ sourceExamIds には上記の examId をすべて入れてください。`,
         modelSettings: { maxOutputTokens: 32000 },
         providerOptions: anthropicOptions('high'),
       },
+      { progress },
     )
-    const spec = examSpecSchema.parse(result.object)
+    const spec = examSpecSchema.parse(raw)
     if (inputData.title) spec.title = inputData.title
     spec.sourceExamIds = targets.map(e => e.id)
     return { input: inputData, spec }

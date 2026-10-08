@@ -5,6 +5,8 @@ import { getExam, getSpec, listExams, saveExam, updateExamStatus } from '../db/r
 import { renderExamFiles } from '../render/pdf.ts'
 import { extractedExamSchema, layoutProfileSchema, questionSchema, type ExtractedExam } from '../schemas/exam.ts'
 import { reviewResultSchema } from '../schemas/spec.ts'
+import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
+import { streamObject } from '../services/llm.ts'
 
 /**
  * 予想問題の生成:
@@ -42,7 +44,9 @@ const generateStep = createStep({
     layout: layoutProfileSchema,
     referenceExamId: z.string().optional(),
   }),
-  execute: async ({ inputData, mastra }) => {
+  execute: async ({ inputData, mastra, requestContext }) => {
+    const progress = progressReporter(jobIdFrom(requestContext), '作問中 (過去問と要件定義を参照しながら生成)')
+    await progress.flush()
     const spec = await getSpec(inputData.specId)
     if (!spec) throw new Error(`要件定義が見つかりません: ${inputData.specId}`)
 
@@ -63,41 +67,45 @@ const generateStep = createStep({
 ${inputData.instructions ? `- 管理者からの指示: ${inputData.instructions}` : ''}`
 
     let generated = generatedExamSchema.parse(
-      (
-        await generator.generate(basePrompt, {
+      await streamObject(
+        generator,
+        basePrompt,
+        {
           structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: 'auto' },
           maxSteps: 60,
           modelSettings: { maxOutputTokens: 64000 },
           providerOptions: anthropicOptions('xhigh'),
-        })
-      ).object,
+        },
+        { progress },
+      ),
     )
 
     let revisions = 0
     let review = await runReview()
     while (!review.approved && revisions < inputData.maxRevisions) {
       revisions++
+      await progress.setPhase(`校閲の指摘を反映して改訂中 (${revisions} 回目)`)
       const issues = review.issues
         .map(i => `- [${i.severity}/${i.category}] ${i.questionNumber ? `問${i.questionNumber}: ` : ''}${i.message}${i.suggestion ? ` → ${i.suggestion}` : ''}`)
         .join('\n')
       generated = generatedExamSchema.parse(
-        (
-          await generator.generate(
-            `${basePrompt}
+        await streamObject(
+          generator,
+          `${basePrompt}
 
 前回の草案 (JSON):
 ${JSON.stringify(generated)}
 
 校閲者から次の指摘がありました。指摘された設問を修正し (必要なら差し替え)、指摘のない設問は原則そのまま残して、完全な 1 回分を再出力してください。
 ${issues}`,
-            {
-              structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: 'auto' },
-              maxSteps: 60,
-              modelSettings: { maxOutputTokens: 64000 },
-              providerOptions: anthropicOptions('xhigh'),
-            },
-          )
-        ).object,
+          {
+            structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: 'auto' },
+            maxSteps: 60,
+            modelSettings: { maxOutputTokens: 64000 },
+            providerOptions: anthropicOptions('xhigh'),
+          },
+          { progress },
+        ),
       )
       review = await runReview()
     }
@@ -105,7 +113,9 @@ ${issues}`,
     return { input: inputData, generated, review, revisions, layout, referenceExamId: reference?.id }
 
     async function runReview() {
-      const res = await reviewer.generate(
+      await progress.setPhase('校閲中 (要件定義と過去問に照らして検査)')
+      const raw = await streamObject(
+        reviewer,
         `次の予想問題を要件定義 specId=${inputData.specId} と過去問に照らして検査してください。
 
 予想問題 (JSON):
@@ -116,8 +126,9 @@ ${JSON.stringify(generated)}`,
           modelSettings: { maxOutputTokens: 16000 },
           providerOptions: anthropicOptions('high'),
         },
+        { progress },
       )
-      return reviewResultSchema.parse(res.object)
+      return reviewResultSchema.parse(raw)
     }
   },
 })
