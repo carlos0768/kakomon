@@ -107,6 +107,7 @@ npm run admin -- approve <runId>
 - **登録やログインで「サーバ側のエラー」/ Internal Server Error** → `/kakomon/health` を開いて `db` と `dbError` を見る。たいていは `KAKOMON_DB_URL` 未設定 (Redeploy 忘れ) かパスワード違い。
 - **404 のまま** → Vercel のビルドログに `Deployer found, preparing deployer build...` が出ているか確認。出ていなければフレームワークに Mastra を選んでいないか、古いコミットをデプロイしている。
 - **問題一覧が常に空 / 承認したのに出ない** → `KAKOMON_DB_URL` が未設定で `file:` のままになっている。Function のログに `[kakomon] サーバレス環境でローカルファイル DB にフォールバック` が出る。
+- **アップロードで 413 (Payload Too Large)** → Vercel の関数はリクエスト本文 4.5MB までというプラットフォーム側の制限があり、設定では変えられない。それより大きい PDF は手元で `npm run dev` を起動した管理画面からアップロードする (同じ Supabase を見ているので結果はサイトに反映される)。手元で 413 が出る場合は `.env` の `KAKOMON_MAX_UPLOAD_MB` (既定 32) を確認する。
 - **`too many connections` / 接続エラー** → 直接接続 (5432) ではなく Transaction pooler (6543) の URI を使う。
 - **`password authentication failed`** → URI の `<password>` に記号が含まれる場合は URL エンコードする (`@` → `%40` など)。
 - **Studio でログインできない** → パスワード欄に `KAKOMON_ADMIN_TOKEN` をそのまま入れる (メール欄は無視される)。
