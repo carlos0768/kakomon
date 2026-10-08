@@ -14,10 +14,20 @@ export const choiceSchema = z.object({
 })
 export type Choice = z.infer<typeof choiceSchema>
 
+/** 複数の設問で共有される資料文 (長文読解の本文など)。設問側は passageId で参照する */
+export const passageSchema = z.object({
+  id: z.string().describe('資料文 ID (例: "P1")'),
+  title: z.string().optional().describe('資料文の見出し (例: "第1問 次の英文を読んで")'),
+  text: z.string().describe('資料文の本文 (原文のまま)'),
+})
+export type Passage = z.infer<typeof passageSchema>
+
 export const questionSchema = z.object({
   number: z.number().int().describe('大問/設問番号 (通し)'),
-  /** 複数の設問が同じ資料文を共有する場合、資料文を passage に入れる */
-  passage: z.string().optional().describe('設問が参照する資料・事例文 (共有される場合)'),
+  /** 共有資料文は passages に 1 回だけ置き、設問からは passageId で参照する (出力量を抑えるため) */
+  passageId: z.string().optional().describe('参照する共有資料文の ID (passages の id)'),
+  /** その設問だけが使う短い資料文。共有資料文は passageId を使う */
+  passage: z.string().optional().describe('この設問専用の短い資料・事例文 (共有資料文は passageId で参照)'),
   stem: z.string().describe('問題文 (設問本体)'),
   choices: z.array(choiceSchema).min(2),
   correctLabel: z.string().optional().describe('正解の選択肢ラベル (解答が判明している場合)'),
@@ -75,6 +85,8 @@ export const extractedExamSchema = z.object({
   session: z.string().optional().describe('回次 (例: 第1回, 前期)'),
   timeLimitMinutes: z.number().int().optional(),
   instructions: z.array(z.string()).default([]).describe('受験上の注意・指示文'),
+  /** 複数の設問で共有する資料文。長文は 1 回だけここに書く */
+  passages: z.array(passageSchema).default([]).describe('複数の設問で共有する資料文 (1 回だけ記述)'),
   questions: z.array(questionSchema).min(1),
   layout: layoutProfileSchema,
   /** 抽出時に気づいた点 (判読不能な箇所など) */
@@ -90,10 +102,25 @@ export const publicQuestionSchema = questionSchema
   })
 export type PublicQuestion = z.infer<typeof publicQuestionSchema>
 
-export function toPublicQuestion(q: Question): PublicQuestion {
+/** 設問が参照する資料文 (専用の passage か、passages から passageId で引いたもの) */
+export function resolvePassage(q: Pick<Question, 'passage' | 'passageId'>, passages: Passage[] = []): string | undefined {
+  if (q.passage) return q.passage
+  if (q.passageId) return passages.find(p => p.id === q.passageId)?.text
+  return undefined
+}
+
+/** 設問ごとに資料文を展開した配列を返す (表示・採点・検索用)。共有資料文は連続する設問で重複する */
+export function questionsWithPassages<T extends Pick<Question, 'passage' | 'passageId'>>(
+  questions: T[],
+  passages: Passage[] = [],
+): Array<T & { passage?: string }> {
+  return questions.map(q => ({ ...q, passage: resolvePassage(q, passages) }))
+}
+
+export function toPublicQuestion(q: Question, passages: Passage[] = []): PublicQuestion {
   return {
     number: q.number,
-    passage: q.passage,
+    passage: resolvePassage(q, passages),
     stem: q.stem,
     domain: q.domain,
     topic: q.topic,

@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { Mastra } from '@mastra/core'
+import { RequestContext } from '@mastra/core/request-context'
 import { z } from 'zod'
 import { anthropicOptions } from '../config.ts'
 import { ensureSchema, getDb, type Row } from '../db/client.ts'
 import { getExam, saveExam } from '../db/repo.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
+import { JOB_ID_KEY, type JobProgress } from './job-progress.ts'
 
 /**
  * 管理画面から起動する非同期ジョブ。
@@ -24,6 +26,8 @@ export interface Job {
   input: unknown
   result?: unknown
   suspend?: unknown
+  /** 実行中の進捗 (ステップが書き込む) */
+  progress?: JobProgress
   error?: string
   createdAt: string
   updatedAt: string
@@ -62,6 +66,7 @@ function rowToJob(r: Row): Job {
     input: JSON.parse(String(r.input_json)),
     result: r.result_json ? JSON.parse(String(r.result_json)) : undefined,
     suspend: r.suspend_json ? JSON.parse(String(r.suspend_json)) : undefined,
+    progress: r.progress_json ? (JSON.parse(String(r.progress_json)) as JobProgress) : undefined,
     error: str(r.error),
     createdAt: str(r.created_at)!,
     updatedAt: str(r.updated_at)!,
@@ -99,6 +104,13 @@ export async function listJobs(limit = 50): Promise<Job[]> {
   return rows.map(rowToJob)
 }
 
+/** 実行中のジョブのうち条件に合う最初のもの (二重起動の防止に使う) */
+export async function findRunningJob(kind: JobKind, match: (job: Job) => boolean = () => true): Promise<Job | undefined> {
+  await ensureSchema()
+  const rows = await getDb().execute(`SELECT * FROM jobs WHERE status = 'running' AND kind = ? ORDER BY created_at DESC`, [kind])
+  return rows.map(rowToJob).find(match)
+}
+
 /** ワークフローの実行結果を jobs に反映する */
 async function recordWorkflowResult(jobId: string, res: { status: string; result?: unknown; steps?: Record<string, any>; error?: unknown; suspended?: unknown }) {
   if (res.status === 'success') {
@@ -118,8 +130,11 @@ export async function startWorkflowJob(mastra: Mastra, kind: Exclude<JobKind, 's
   const run = await workflow.createRun()
   const id = randomUUID()
   await insertJob({ id, kind, title, runId: run.runId, input })
+  // ステップが進捗を jobs に書けるよう、requestContext でジョブ ID を渡す
+  const requestContext = new RequestContext()
+  requestContext.set(JOB_ID_KEY as never, id as never)
   void run
-    .start({ inputData: input as never })
+    .start({ inputData: input as never, requestContext })
     .then(res => recordWorkflowResult(id, res as never))
     .catch(err => updateJob(id, { status: 'failed', error: errorMessage(err) }))
   return (await getJob(id))!
@@ -161,9 +176,10 @@ export async function solveExam(mastra: Mastra, examId: string) {
   if (!targets.length) return { examId, solved: [], message: 'すべての設問に正解と根拠が付いています' }
   const agent = mastra.getAgentById('exam-reviewer')
   const res = await agent.generate(
-    `次の過去問設問について、正解の選択肢と、各選択肢が正解/不正解である根拠を示してください。確信が持てない場合は confidence を下げてください。\n\n${JSON.stringify(
-      targets.map(q => ({ number: q.number, passage: q.passage, stem: q.stem, choices: q.choices.map(c => ({ label: c.label, text: c.text })) })),
-    )}`,
+    `次の過去問設問について、正解の選択肢と、各選択肢が正解/不正解である根拠を示してください。確信が持てない場合は confidence を下げてください。\n\n${JSON.stringify({
+      passages: rec.exam.passages,
+      questions: targets.map(q => ({ number: q.number, passageId: q.passageId, passage: q.passage, stem: q.stem, choices: q.choices.map(c => ({ label: c.label, text: c.text })) })),
+    })}`,
     { structuredOutput: { schema: solveSchema, jsonPromptInjection: 'auto' }, modelSettings: { maxOutputTokens: 32000 }, providerOptions: anthropicOptions('high') },
   )
   const parsed = solveSchema.parse(res.object)

@@ -6,7 +6,7 @@ import { createVectorQueryTool } from '@mastra/rag'
 import { embedMany } from 'ai'
 import { z } from 'zod'
 import { config, pgSslOption } from '../config.ts'
-import type { ExtractedExam } from '../schemas/exam.ts'
+import { resolvePassage, type ExtractedExam } from '../schemas/exam.ts'
 
 /**
  * 任意機能: 埋め込みモデルが設定されていればベクトル検索を有効化する。
@@ -36,7 +36,7 @@ function embeddingModel() {
 export async function indexExamForVectorSearch(examId: string, exam: ExtractedExam): Promise<number> {
   if (!isVectorSearchEnabled()) return 0
   const values = exam.questions.map(q =>
-    [q.passage ?? '', q.stem, ...q.choices.map(c => `${c.label}. ${c.text}`)].filter(Boolean).join('\n'),
+    [resolvePassage(q, exam.passages) ?? '', q.stem, ...q.choices.map(c => `${c.label}. ${c.text}`)].filter(Boolean).join('\n'),
   )
   const { embeddings } = await embedMany({ model: embeddingModel(), values })
   const dimension = embeddings[0]?.length

@@ -27,6 +27,8 @@ export const config = {
   model: process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
   /** 添削・弱点分析など軽めの処理に使うモデル */
   lightModel: process.env.KAKOMON_LIGHT_MODEL ?? process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
+  /** 過去問 PDF の読み取り (転記作業) に使うモデル。未設定なら KAKOMON_MODEL */
+  extractModel: process.env.KAKOMON_EXTRACT_MODEL ?? process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
   /** libSQL の接続 URL。Studio / CLI / サーバで同じ DB を見るため絶対パスに解決する */
   dbUrl: resolveDbUrl(process.env.KAKOMON_DB_URL ?? 'file:./kakomon.db'),
   /** Turso など認証が必要なリモート libSQL のトークン */

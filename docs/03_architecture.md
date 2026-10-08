@@ -50,7 +50,7 @@ data/out/                  生成物 (git 管理外)
 
 | エージェント | モデル設定 | ツール | 出力 |
 |---|---|---|---|
-| `exam-extractor` | `KAKOMON_MODEL`, effort high | なし (PDF を直接読む) | `ExtractedExam` |
+| `exam-extractor` | `KAKOMON_EXTRACT_MODEL` (既定 `KAKOMON_MODEL`), effort medium, stream | なし (PDF を直接読む) | `ExtractedExam` (共有資料文は `passages`、設問は `passageId` で参照) |
 | `exam-analyst` | `KAKOMON_MODEL`, effort high, maxSteps 40 | list / get / stats / search / webSearch / webFetch | `ExamSpec` (参照した出典は `sources`) |
 | `exam-generator` | `KAKOMON_MODEL`, effort xhigh, maxSteps 60 | spec / list / get / search / semantic / webSearch / webFetch | `generatedExam` (questions + designNotes) |
 | `exam-reviewer` | `KAKOMON_MODEL`, effort high | spec / search / get / webSearch / webFetch | `ReviewResult` |
@@ -72,7 +72,7 @@ data/out/                  生成物 (git 管理外)
 | `weakness_reports` | user_id, data_json | 最新の弱点分析 |
 | `users` | id, username (unique), password_hash (scrypt) | 受験者アカウント (メール不要) |
 | `sessions` | token_hash, user_id, expires_at | Cookie セッション (生トークンは保存しない) |
-| `jobs` | id, kind, status, run_id, input_json, result_json, suspend_json, error | 管理画面から起動した非同期ジョブ (取り込み/分析/作問/正解推定) |
+| `jobs` | id, kind, status, run_id, input_json, result_json, suspend_json, progress_json, error | 管理画面から起動した非同期ジョブ (取り込み/分析/作問/正解推定)。progress_json は実行中の段階・出力文字数 |
 
 Mastra 自身のテーブル (ワークフロー snapshot, トレース等) も同じ DB に作られる。`KAKOMON_DB_URL` が `postgresql://` なら Postgres (Supabase: `PostgresStore` / `PgVector` / `pg`)、それ以外なら libSQL (`LibSQLStore` / `LibSQLVector` / `@libsql/client`) を使う。SQL は `src/mastra/db/client.ts` のアダプタで両方言に対応しており、Postgres 用のマイグレーションは `supabase/migrations/` にある。
 

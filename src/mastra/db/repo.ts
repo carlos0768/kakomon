@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { ensureSchema, getDb, type Row } from './client.ts'
-import { extractedExamSchema, questionSchema, type ExtractedExam, type Question } from '../schemas/exam.ts'
+import { extractedExamSchema, questionSchema, resolvePassage, type ExtractedExam, type Passage, type Question } from '../schemas/exam.ts'
 import { examSpecSchema, type ExamSpec } from '../schemas/spec.ts'
 import type { Answer, GradingResult, WeaknessReport } from '../schemas/grading.ts'
 
@@ -65,8 +65,8 @@ function rowToExam(row: Row): ExamRecord {
 }
 
 /** 設問の検索対象テキスト (キーワード検索用) */
-export function questionSearchText(q: Question): string {
-  return [q.passage ?? '', q.stem, ...q.choices.map(c => c.text), q.domain, q.topic, ...q.keywords].join('\n')
+export function questionSearchText(q: Question, passages: Passage[] = []): string {
+  return [resolvePassage(q, passages) ?? '', q.stem, ...q.choices.map(c => c.text), q.domain, q.topic, ...q.keywords].join('\n')
 }
 
 // ---------- exams ----------
@@ -115,7 +115,7 @@ export async function saveExam(input: {
           q.difficulty,
           q.cognitiveLevel,
           q.correctLabel ?? null,
-          questionSearchText(q),
+          questionSearchText(q, exam.passages),
           JSON.stringify(q),
         ],
       )

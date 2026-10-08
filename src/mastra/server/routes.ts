@@ -1,3 +1,4 @@
+import type { Mastra } from '@mastra/core'
 import { registerApiRoute } from '@mastra/core/server'
 import { z } from 'zod'
 import { config } from '../config.ts'
@@ -22,7 +23,8 @@ import { MIN_ATTEMPTS_FOR_WEAKNESS } from '../services/weakness.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
 import { userUiHtml } from './ui.ts'
 import { adminUiHtml } from './admin-ui.ts'
-import { getJob, listJobs, resumeGenerateJob, startSolveJob, startWorkflowJob } from '../services/jobs.ts'
+import { findRunningJob, getJob, listJobs, resumeGenerateJob, startSolveJob, startWorkflowJob } from '../services/jobs.ts'
+import { PreflightError, preflightModel } from '../services/preflight.ts'
 import { listUsers, resetPassword } from '../services/auth.ts'
 import { getSpec } from '../db/repo.ts'
 import { specToMarkdown } from '../services/spec-markdown.ts'
@@ -37,6 +39,16 @@ import { randomUUID } from 'node:crypto'
  * - /kakomon/admin/*  … 管理者向け (下書きの承認など)。KAKOMON_ADMIN_TOKEN があれば Bearer 認証。
  * 作問・分析そのものは Mastra 標準の /api/workflows/* (Studio) か CLI から実行する。
  */
+
+/** ジョブ開始前にモデル API の疎通 (キー・残高) を確認し、ダメなら 400 の Response を返す */
+async function preflightOr400(c: { get(key: 'mastra'): Mastra; json: (body: unknown, status: 400) => Response }): Promise<Response | undefined> {
+  try {
+    await preflightModel(c.get('mastra'))
+    return undefined
+  } catch (err) {
+    return c.json({ error: err instanceof PreflightError ? err.message : String(err) }, 400)
+  }
+}
 
 const adminAuth = async (c: any, next: () => Promise<void>) => {
   if (config.adminToken) {
@@ -194,7 +206,7 @@ export const apiRoutes = [
         instructions: rec.exam.instructions,
         timeLimitMinutes: rec.exam.timeLimitMinutes,
         layout: rec.exam.layout,
-        questions: rec.exam.questions.map(toPublicQuestion),
+        questions: rec.exam.questions.map(q => toPublicQuestion(q, rec.exam.passages)),
         printableHtmlUrl: `/kakomon/exams/${rec.id}/print`,
       })
     },
@@ -386,6 +398,9 @@ export const apiRoutes = [
     handler: async c => {
       const rec = await getExam(c.req.param('examId'))
       if (!rec) return c.json({ error: 'exam not found' }, 404)
+      if (await findRunningJob('solve', j => (j.input as { examId?: string }).examId === rec.id)) return c.json({ error: 'この過去問の正解推定はすでに実行中です' }, 409)
+      const pre = await preflightOr400(c)
+      if (pre) return pre
       const job = await startSolveJob(c.get('mastra'), rec.id, `正解推定: ${rec.title}`)
       return c.json({ job })
     },
@@ -400,13 +415,25 @@ export const apiRoutes = [
       const file = body['file']
       if (!(file instanceof File)) return c.json({ error: 'PDF ファイルを選択してください' }, 400)
       if (file.size > config.maxUploadBytes) return c.json({ error: `PDF は ${Math.floor(config.maxUploadBytes / 1024 / 1024)}MB 以下にしてください` }, 400)
+      const title0 = typeof body['title'] === 'string' && body['title'] ? body['title'] : undefined
+      const year0 = typeof body['year'] === 'string' && body['year'] ? Number(body['year']) : undefined
+      // 同じ過去問 (同じファイル名、または同じ試験名+年度) の取り込みが走っていれば二重起動しない (費用が倍になる)
+      const dup = await findRunningJob('ingest', j => {
+        const input = j.input as { filePath?: string; title?: string; year?: number }
+        const sameFile = Boolean(input.filePath && path.basename(input.filePath).endsWith(file.name.replace(/[^\w.\-\u3000-\u9fff]/g, '_')))
+        const sameTitle = Boolean(title0 && input.title === title0 && (year0 ?? null) === (input.year ?? null))
+        return sameFile || sameTitle
+      })
+      if (dup) return c.json({ error: `同じ過去問の取り込みがすでに実行中です (${dup.title})。終わるまで待ってください` }, 409)
+      const pre = await preflightOr400(c)
+      if (pre) return pre
       const uploadDir = config.uploadDir
       await mkdir(uploadDir, { recursive: true })
       const safeName = file.name.replace(/[^\w.\-\u3000-\u9fff]/g, '_')
       const filePath = path.join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeName}`)
       await writeFile(filePath, Buffer.from(await file.arrayBuffer()))
-      const title = typeof body['title'] === 'string' && body['title'] ? body['title'] : undefined
-      const year = typeof body['year'] === 'string' && body['year'] ? Number(body['year']) : undefined
+      const title = title0
+      const year = year0
       const session = typeof body['session'] === 'string' && body['session'] ? body['session'] : undefined
       const job = await startWorkflowJob(c.get('mastra'), 'ingest', `取り込み: ${title ?? file.name}${year ? ` (${year})` : ''}`, {
         filePath,
@@ -456,6 +483,9 @@ export const apiRoutes = [
         .object({ title: z.string().optional(), focus: z.string().optional(), examIds: z.array(z.string()).optional(), specId: z.string().optional() })
         .safeParse(await c.req.json().catch(() => ({})))
       if (!body.success) return c.json({ error: body.error.issues }, 400)
+      if (await findRunningJob('analyze')) return c.json({ error: '傾向分析がすでに実行中です。終わるまで待ってください' }, 409)
+      const pre = await preflightOr400(c)
+      if (pre) return pre
       const job = await startWorkflowJob(c.get('mastra'), 'analyze', `傾向分析${body.data.title ? `: ${body.data.title}` : ''}`, body.data)
       return c.json({ job })
     },
@@ -477,6 +507,8 @@ export const apiRoutes = [
         })
         .safeParse(await c.req.json().catch(() => ({})))
       if (!body.success) return c.json({ error: body.error.issues }, 400)
+      const pre = await preflightOr400(c)
+      if (pre) return pre
       const job = await startWorkflowJob(c.get('mastra'), 'generate', `作問: ${body.data.title}`, body.data)
       return c.json({ job })
     },

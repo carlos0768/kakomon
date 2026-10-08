@@ -22,6 +22,18 @@ describe('renderExamHtml', () => {
     expect(html).toContain('&lt;b&gt;危険&lt;/b&gt; &amp; 記号')
   })
 
+  it('prints a shared passage once before the first question that references it', () => {
+    const exam = makeExam({ passages: [{ id: 'P1', title: '次の英文を読んで答えよ', text: 'Long shared passage text.' }] })
+    exam.questions[0]!.passageId = 'P1'
+    exam.questions[1]!.passageId = 'P1'
+    exam.questions[2]!.passage = '問3 だけの短い資料'
+    const html = renderExamHtml(exam)
+    expect(html.split('Long shared passage text.').length - 1).toBe(1)
+    expect(html).toContain('次の英文を読んで答えよ')
+    expect(html.indexOf('Long shared passage text.')).toBeLessThan(html.indexOf('id="q1"'))
+    expect(html).toContain('問3 だけの短い資料')
+  })
+
   it('formats labels per style', () => {
     expect(formatChoiceLabel('3', 'katakana')).toBe('ウ')
     expect(formatChoiceLabel('2', 'alpha-upper')).toBe('B')

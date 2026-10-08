@@ -2,6 +2,7 @@ import { createStep, createWorkflow } from '@mastra/core/workflows'
 import { z } from 'zod'
 import { anthropicOptions } from '../config.ts'
 import { getAttempt, getExam, submitAttempt } from '../db/repo.ts'
+import { resolvePassage } from '../schemas/exam.ts'
 import { answerSchema, explanationBatchSchema, gradingResultSchema } from '../schemas/grading.ts'
 import { gradeDeterministic } from '../services/grading.ts'
 
@@ -50,7 +51,7 @@ const explainStep = createStep({
         questionNumber: f.questionNumber,
         correct: f.correct,
         stem: q.stem,
-        passage: q.passage,
+        passage: resolvePassage(q, exam?.exam.passages),
         choices: q.choices.map(c => ({ label: c.label, text: c.text, rationale: c.rationale })),
         selectedLabel: f.selectedLabel,
         correctLabel: f.correctLabel,

@@ -26,7 +26,7 @@ export function userUiHtml(): string {
   .tabs button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
   .q { border-top:1px solid var(--line); padding:12px 0; }
   .q .stem { white-space:pre-wrap; }
-  .q .passage { border-left:3px solid var(--line); padding-left:10px; margin:6px 0; white-space:pre-wrap; opacity:.9; }
+  .passage { border-left:3px solid var(--line); padding-left:10px; margin:14px 0 8px; white-space:pre-wrap; opacity:.9; }
   .choice { display:block; margin:4px 0; cursor:pointer; }
   .ok { color:var(--ok); font-weight:600; } .ng { color:var(--ng); font-weight:600; }
   .fb { background:rgba(127,127,127,.08); border-radius:6px; padding:8px 10px; margin-top:6px; font-size:14px; }
@@ -122,8 +122,8 @@ async function startExam(examId) {
     $('#result').innerHTML = ''; $('#history').innerHTML = '';
     $('#exam').innerHTML = '<div class="card"><h2>' + esc(exam.title) + '</h2>'
       + (exam.instructions.length ? '<ol class="muted">' + exam.instructions.map(i => '<li>' + esc(i) + '</li>').join('') + '</ol>' : '')
-      + exam.questions.map(q => '<div class="q" id="q' + q.number + '"><div><strong>問' + q.number + '</strong></div>'
-        + (q.passage ? '<div class="passage">' + esc(q.passage) + '</div>' : '')
+      + exam.questions.map((q, i) => ((q.passage && q.passage !== (exam.questions[i - 1] || {}).passage) ? '<div class="passage">' + esc(q.passage) + '</div>' : '')
+        + '<div class="q" id="q' + q.number + '"><div><strong>問' + q.number + '</strong></div>'
         + '<div class="stem">' + esc(q.stem) + '</div>'
         + q.choices.map(c => '<label class="choice"><input type="radio" name="q' + q.number + '" value="' + esc(c.label) + '"> ' + esc(c.label) + '. ' + esc(c.text) + '</label>').join('')
         + '</div>').join('')
