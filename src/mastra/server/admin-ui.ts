@@ -61,7 +61,7 @@ export function adminUiHtml(): string {
         <input id="upSession" placeholder="回次 (任意)" style="width:120px">
         <button type="submit" id="uploadBtn">アップロードして取り込む</button>
       </form>
-      <p class="muted">写真をまとめた PDF でも可 (32MB まで)。取り込みには数分かかります。進行状況は「ジョブ」に出ます。</p>
+      <p class="muted" id="uploadHint">写真をまとめた PDF でも可。取り込みには数分かかります。進行状況は「ジョブ」に出ます。</p>
       <div class="err" id="uploadErr"></div>
       <h3>登録済み</h3>
       <div id="examList"></div>
@@ -113,11 +113,17 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let token = ''; try { token = localStorage.getItem('kakomon.adminToken') || ''; } catch {}
 const headers = () => token ? { authorization: 'Bearer ' + token } : {};
+let me = null;
+const mb = b => b ? (b / 1024 / 1024).toFixed(b % (1024 * 1024) ? 1 : 0) + 'MB' : '?';
 const api = async (path, opts = {}) => {
   const h = { ...headers(), ...(opts.body && !(opts.body instanceof FormData) ? { 'content-type': 'application/json' } : {}), ...(opts.headers || {}) };
   const r = await fetch(path, { ...opts, headers: h });
   const text = await r.text(); let j = {}; try { j = JSON.parse(text); } catch { j = { raw: text }; }
-  if (!r.ok) { const e = new Error(j.error ? (typeof j.error === 'string' ? j.error : JSON.stringify(j.error)) : (r.status + ' ' + r.statusText)); e.status = r.status; throw e; }
+  if (!r.ok) {
+    let msg = j.error ? (typeof j.error === 'string' ? j.error : JSON.stringify(j.error)) : (r.status + ' ' + r.statusText);
+    if (r.status === 413) msg = 'ファイルが大きすぎます (413)。' + (me && me.serverless ? 'Vercel 上では 4MB までしか送れません。手元で npm run dev を起動した管理画面からアップロードしてください。' : 'サーバの上限は ' + mb(me && me.maxUploadBytes) + ' です。');
+    const e = new Error(msg); e.status = r.status; throw e;
+  }
   return j;
 };
 const fmt = d => d ? String(d).replace('T', ' ').slice(0, 19) : '';
@@ -125,9 +131,10 @@ const tag = s => '<span class="tag ' + esc(s) + '">' + esc(s) + '</span>';
 
 async function init() {
   try {
-    const me = await api('/kakomon/admin/whoami');
+    me = await api('/kakomon/admin/whoami');
     $('#login').style.display = 'none'; $('#app').style.display = '';
     $('#envInfo').textContent = 'DB: ' + me.dbDialect + (me.serverless ? ' / Vercel' : ' / ローカル') + (me.authRequired ? '' : ' / 認証なし');
+    $('#uploadHint').textContent = '写真をまとめた PDF でも可 (' + mb(me.maxUploadBytes) + ' まで' + (me.serverless ? '。Vercel の制限なので、それより大きい PDF は手元の npm run dev の管理画面から' : '') + ')。取り込みには数分かかります。進行状況は「ジョブ」に出ます。';
     await refreshAll(); startPolling();
   } catch (e) {
     $('#login').style.display = ''; $('#app').style.display = 'none';
@@ -166,7 +173,12 @@ window.openPreview = async (ev, href) => {
 window.solve = async examId => { try { await api('/kakomon/admin/exams/' + examId + '/solve', { method: 'POST' }); await loadJobs(); } catch (e) { alert(e.message); } };
 $('#uploadForm').onsubmit = async e => {
   e.preventDefault(); $('#uploadErr').textContent = '';
-  const fd = new FormData(); fd.append('file', $('#pdf').files[0]); fd.append('title', $('#upTitle').value); fd.append('year', $('#upYear').value); fd.append('session', $('#upSession').value);
+  const f = $('#pdf').files[0];
+  if (me && me.maxUploadBytes && f.size > me.maxUploadBytes) {
+    $('#uploadErr').textContent = 'このファイルは ' + mb(f.size) + ' で、上限 ' + mb(me.maxUploadBytes) + ' を超えています。' + (me.serverless ? 'Vercel 上では送れないので、手元で npm run dev を起動した管理画面 (http://localhost:4111/kakomon/admin) からアップロードしてください。' : '.env の KAKOMON_MAX_UPLOAD_MB で上限を上げられます (Claude の PDF 入力上限は 32MB)。');
+    return;
+  }
+  const fd = new FormData(); fd.append('file', f); fd.append('title', $('#upTitle').value); fd.append('year', $('#upYear').value); fd.append('session', $('#upSession').value);
   $('#uploadBtn').disabled = true; $('#uploadBtn').classList.add('spin');
   try { await api('/kakomon/admin/upload', { method: 'POST', body: fd }); $('#pdf').value = ''; await loadJobs(); location.hash = '#jobs'; }
   catch (err) { $('#uploadErr').textContent = err.message; }

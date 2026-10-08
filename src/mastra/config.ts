@@ -47,6 +47,8 @@ export const config = {
   outDir: path.resolve(findProjectRoot(), process.env.KAKOMON_OUT_DIR ?? 'data/out'),
   /** アップロードした過去問 PDF の保存先 */
   uploadDir: path.resolve(findProjectRoot(), 'data/past-exams'),
+  /** アップロードできる PDF の上限 (バイト)。Claude の PDF 入力上限が 32MB なので既定 32MB */
+  maxUploadBytes: Math.max(1, Number(process.env.KAKOMON_MAX_UPLOAD_MB) || 32) * 1024 * 1024,
 }
 
 function isServerless(): boolean {

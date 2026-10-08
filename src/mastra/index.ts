@@ -60,5 +60,7 @@ export const mastra = new Mastra({
   server: {
     auth,
     apiRoutes,
+    // Mastra の既定は 4.5MB。写真を束ねた過去問 PDF はそれを超えるので、アップロード上限 + multipart のオーバーヘッド分まで許可する
+    bodySizeLimit: config.maxUploadBytes + 1024 * 1024,
   },
 })

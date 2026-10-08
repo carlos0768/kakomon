@@ -327,7 +327,15 @@ export const apiRoutes = [
   registerApiRoute('/kakomon/admin/whoami', {
     method: 'GET',
     middleware: [adminAuth],
-    handler: async c => c.json({ ok: true, authRequired: Boolean(config.adminToken), dbDialect: config.dbDialect, serverless: config.isServerless }),
+    handler: async c =>
+      c.json({
+        ok: true,
+        authRequired: Boolean(config.adminToken),
+        dbDialect: config.dbDialect,
+        serverless: config.isServerless,
+        // Vercel の関数はリクエスト本文 4.5MB が上限 (プラットフォーム側の制限で変更不可)
+        maxUploadBytes: config.isServerless ? Math.min(config.maxUploadBytes, 4 * 1024 * 1024) : config.maxUploadBytes,
+      }),
   }),
 
   // ---- 過去問・予想問題の一覧 / 詳細 ----
@@ -391,7 +399,7 @@ export const apiRoutes = [
       const body = await c.req.parseBody()
       const file = body['file']
       if (!(file instanceof File)) return c.json({ error: 'PDF ファイルを選択してください' }, 400)
-      if (file.size > 32 * 1024 * 1024) return c.json({ error: 'PDF は 32MB 以下にしてください' }, 400)
+      if (file.size > config.maxUploadBytes) return c.json({ error: `PDF は ${Math.floor(config.maxUploadBytes / 1024 / 1024)}MB 以下にしてください` }, 400)
       const uploadDir = config.uploadDir
       await mkdir(uploadDir, { recursive: true })
       const safeName = file.name.replace(/[^\w.\-\u3000-\u9fff]/g, '_')
