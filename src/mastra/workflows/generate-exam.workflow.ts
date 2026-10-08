@@ -3,14 +3,16 @@ import { z } from 'zod'
 import { anthropicOptions } from '../config.ts'
 import { getExam, getSpec, listExams, saveExam, updateExamStatus } from '../db/repo.ts'
 import { renderExamFiles } from '../render/pdf.ts'
-import { extractedExamSchema, layoutProfileSchema, questionSchema, type ExtractedExam } from '../schemas/exam.ts'
+import { extractedExamSchema, layoutProfileSchema, passageSchema, questionSchema, type ExtractedExam } from '../schemas/exam.ts'
 import { reviewResultSchema } from '../schemas/spec.ts'
+import { applyRevision, batchSizeFromEnv, mergeBatch, planBatches, type GeneratedParts } from '../services/generation-plan.ts'
 import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
 import { streamObject } from '../services/llm.ts'
+import { specToMarkdown } from '../services/spec-markdown.ts'
 
 /**
  * 予想問題の生成:
- *   generate (作問 LLM, 過去問ツール付き) → review (校閲 LLM) → 必要なら 1 回改訂
+ *   generate (作問 LLM, 過去問ツール付き。分野配分を保ってバッチ生成) → review (校閲 LLM) → 必要なら改訂 (指摘分だけ再出力)
  *   → 下書き保存 → 管理者承認 (suspend) → レンダリング (HTML/PDF) → 公開
  */
 
@@ -23,14 +25,31 @@ const inputSchema = z.object({
   maxRevisions: z.number().int().min(0).max(3).default(1),
 })
 
-/** 作問 LLM の出力 (レイアウトは参照過去問からコピーするので含めない) */
+/** 作問 LLM の 1 バッチ分の出力。タイトル・注意書きは参照過去問から引き継ぐので含めない */
+const generatedBatchSchema = z.object({
+  passages: z.array(passageSchema).default([]).describe('複数の設問で共有する資料文 (1 回だけ記述)'),
+  questions: z.array(questionSchema).min(1),
+  /** 設計メモ: 分野・難易度の割り付けと意図 */
+  designNotes: z.string().default(''),
+})
+
+/** 校閲後の改訂出力: 指摘された設問だけを再出力する */
+const revisionSchema = z.object({
+  passages: z.array(passageSchema).default([]),
+  questions: z.array(questionSchema).default([]),
+  designNotes: z.string().default(''),
+})
+
+/** バッチをマージした 1 回分 */
 const generatedExamSchema = z.object({
   title: z.string(),
   instructions: z.array(z.string()).default([]),
   timeLimitMinutes: z.number().int().optional(),
+  passages: z.array(passageSchema).default([]),
   questions: z.array(questionSchema).min(1),
-  /** 設計メモ: 分野・難易度の割り付けと意図 */
   designNotes: z.string(),
+  /** 生成時に気づいた点 (バッチの過不足など) */
+  notes: z.array(z.string()).default([]),
 })
 
 const generateStep = createStep({
@@ -45,7 +64,7 @@ const generateStep = createStep({
     referenceExamId: z.string().optional(),
   }),
   execute: async ({ inputData, mastra, requestContext }) => {
-    const progress = progressReporter(jobIdFrom(requestContext), '作問中 (過去問と要件定義を参照しながら生成)')
+    const progress = progressReporter(jobIdFrom(requestContext), '作問の準備中')
     await progress.flush()
     const spec = await getSpec(inputData.specId)
     if (!spec) throw new Error(`要件定義が見つかりません: ${inputData.specId}`)
@@ -55,32 +74,51 @@ const generateStep = createStep({
       : (await listExams({ kind: 'past' }))[0]
     const layout = reference?.exam.layout ?? layoutProfileSchema.parse({})
     const count = inputData.questionCount ?? spec.spec.format.questionCount
+    const plans = planBatches(count, spec.spec.domains, batchSizeFromEnv())
 
     const generator = mastra.getAgentById('exam-generator')
     const reviewer = mastra.getAgentById('exam-reviewer')
 
-    const basePrompt = `要件定義 specId=${inputData.specId} (get-exam-spec で取得) に従い、予想問題を 1 回分作成してください。
-- タイトル: ${inputData.title}
-- 設問数: ${count} 問、選択肢数: ${spec.spec.format.choicesPerQuestion}
-- 参照する過去問: ${reference ? `examId=${reference.id} (${reference.title} ${reference.year ?? ''})` : 'なし'} を中心に、list-past-exams で見つかる他の回も参照すること
+    // 要件定義はツールで取りに行かせず本文に埋め込む (バッチごとのツール往復を減らす)
+    const basePrompt = `次の出題要件定義に従い、予想問題「${inputData.title}」を作成します。
+- 全体の設問数: ${count} 問、選択肢数: ${spec.spec.format.choicesPerQuestion}
+- 参照する過去問: ${reference ? `examId=${reference.id} (${reference.title} ${reference.year ?? ''})` : 'なし'} を get-past-exam で読み、文体・選択肢の長さ・誤答の作り方を揃える。list-past-exams で見つかる他の回も参照してよい
 - 選択肢ラベルは参照過去問と同じ表記 (例: ${reference?.exam.questions[0]?.choices.map(c => c.label).join(' ') ?? '1 2 3 4'})
-${inputData.instructions ? `- 管理者からの指示: ${inputData.instructions}` : ''}`
+${inputData.instructions ? `- 管理者からの指示: ${inputData.instructions}\n` : ''}
+<要件定義 specId=${inputData.specId}>
+${specToMarkdown(spec.spec, inputData.specId)}
+</要件定義>`
 
-    // 生成・校閲はツールを持ち、スキーマも大きい。ネイティブ構造化出力だと Anthropic が
-    // "The compiled grammar is too large" で拒否するため、スキーマはプロンプトに注入する (jsonPromptInjection: true)
-    let generated = generatedExamSchema.parse(
-      await streamObject(
+    const acc: GeneratedParts = { passages: [], questions: [], designNotes: [] }
+    const notes: string[] = []
+
+    // 1 回分を一度に出すと出力トークン上限 (finishReason=length) に当たるため、分野配分を保ってバッチ生成する。
+    // 生成・校閲はツールを持ちスキーマも大きいので、ネイティブ構造化出力 ("compiled grammar is too large") ではなく
+    // スキーマをプロンプトに注入する (jsonPromptInjection: true)
+    for (const plan of plans) {
+      await progress.setPhase(`作問中 (${plan.index}/${plans.length} バッチ目: 問${plan.start}〜${plan.end})`)
+      const done = acc.questions.map(q => ({ number: q.number, domain: q.domain, topic: q.topic, stem: q.stem.slice(0, 60) }))
+      const raw = await streamObject(
         generator,
-        basePrompt,
+        `${basePrompt}
+
+この呼び出しでは 問${plan.start}〜問${plan.end} の ${plan.end - plan.start + 1} 問だけを作成してください (全 ${plans.length} バッチ中 ${plan.index} 番目)。
+- この範囲の分野配分: ${plan.quota.map(q => `${q.domain} ${q.count} 問`).join('、')}
+- number は ${plan.start} から連番
+- 長文読解の本文など複数の設問で共有する資料文は passages に 1 回だけ書き、id は "P${plan.index}-1" のようにこのバッチ固有の接頭辞を付け、設問は passageId で参照する。設問ごとに同じ本文を繰り返さない
+- title / instructions は不要。passages / questions / designNotes だけを JSON で出力
+${done.length ? `- すでに作成済みの設問 (題材・問い方の重複を避ける):\n${JSON.stringify(done)}` : ''}`,
         {
-          structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: true },
+          structuredOutput: { schema: generatedBatchSchema, jsonPromptInjection: true },
           maxSteps: 60,
-          modelSettings: { maxOutputTokens: 64000 },
+          modelSettings: { maxOutputTokens: 32000 },
           providerOptions: anthropicOptions('xhigh'),
         },
         { progress },
-      ),
-    )
+      )
+      notes.push(...mergeBatch(acc, generatedBatchSchema.parse(raw), plan))
+    }
+    if (!acc.questions.length) throw new Error('作問結果が空でした')
 
     let revisions = 0
     let review = await runReview()
@@ -90,28 +128,39 @@ ${inputData.instructions ? `- 管理者からの指示: ${inputData.instructions
       const issues = review.issues
         .map(i => `- [${i.severity}/${i.category}] ${i.questionNumber ? `問${i.questionNumber}: ` : ''}${i.message}${i.suggestion ? ` → ${i.suggestion}` : ''}`)
         .join('\n')
-      generated = generatedExamSchema.parse(
-        await streamObject(
-          generator,
-          `${basePrompt}
+      const raw = await streamObject(
+        generator,
+        `${basePrompt}
 
-前回の草案 (JSON):
-${JSON.stringify(generated)}
+現在の草案 (JSON):
+${JSON.stringify({ passages: acc.passages, questions: acc.questions })}
 
-校閲者から次の指摘がありました。指摘された設問を修正し (必要なら差し替え)、指摘のない設問は原則そのまま残して、完全な 1 回分を再出力してください。
-${issues}`,
-          {
-            structuredOutput: { schema: generatedExamSchema, jsonPromptInjection: true },
-            maxSteps: 60,
-            modelSettings: { maxOutputTokens: 64000 },
-            providerOptions: anthropicOptions('xhigh'),
-          },
-          { progress },
-        ),
+校閲者から次の指摘がありました。
+${issues}
+
+指摘された設問だけを修正 (必要なら同じ number で差し替え) して出力してください。指摘のない設問は出力しないでください。
+資料文を直す場合は同じ id で passages に含めてください。出力は passages / questions / designNotes の JSON のみ。`,
+        {
+          structuredOutput: { schema: revisionSchema, jsonPromptInjection: true },
+          maxSteps: 60,
+          modelSettings: { maxOutputTokens: 32000 },
+          providerOptions: anthropicOptions('xhigh'),
+        },
+        { progress },
       )
+      notes.push(...applyRevision(acc, revisionSchema.parse(raw)))
       review = await runReview()
     }
 
+    const generated = generatedExamSchema.parse({
+      title: inputData.title,
+      instructions: reference?.exam.instructions ?? [],
+      timeLimitMinutes: spec.spec.format.timeLimitMinutes ?? reference?.exam.timeLimitMinutes,
+      passages: acc.passages,
+      questions: acc.questions,
+      designNotes: acc.designNotes.join('\n'),
+      notes,
+    })
     return { input: inputData, generated, review, revisions, layout, referenceExamId: reference?.id }
 
     async function runReview() {
@@ -121,7 +170,7 @@ ${issues}`,
         `次の予想問題を要件定義 specId=${inputData.specId} と過去問に照らして検査してください。
 
 予想問題 (JSON):
-${JSON.stringify(generated)}`,
+${JSON.stringify({ title: inputData.title, passages: acc.passages, questions: acc.questions })}`,
         {
           structuredOutput: { schema: reviewResultSchema, jsonPromptInjection: true },
           maxSteps: 40,
@@ -153,9 +202,10 @@ const saveDraftStep = createStep({
       session: '予想',
       timeLimitMinutes: inputData.generated.timeLimitMinutes,
       instructions: inputData.generated.instructions,
+      passages: inputData.generated.passages,
       questions: inputData.generated.questions,
       layout: inputData.layout,
-      extractionNotes: [`generated from spec ${inputData.input.specId}`, inputData.generated.designNotes],
+      extractionNotes: [`generated from spec ${inputData.input.specId}`, ...inputData.generated.notes, inputData.generated.designNotes].filter(Boolean),
     })
     const rec = await saveExam({ kind: 'predicted', exam, status: 'review', specId: inputData.input.specId })
     return {
