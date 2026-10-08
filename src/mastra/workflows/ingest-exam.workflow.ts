@@ -6,6 +6,7 @@ import { anthropicOptions } from '../config.ts'
 import { saveExam } from '../db/repo.ts'
 import { extractedExamSchema } from '../schemas/exam.ts'
 import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
+import { streamObject } from '../services/llm.ts'
 import { indexExamForVectorSearch } from '../tools/vector-search.ts'
 
 /**
@@ -42,7 +43,10 @@ const extractStep = createStep({
     ].filter(Boolean)
     // 出力が長い (数万トークン) ので stream で受け、進捗 (出力文字数・設問数) を jobs に書く。
     // 転記作業なので思考は medium で十分。巨大な PDF を何度も再送しないよう再試行は 1 回まで。
-    const stream = await agent.stream(
+    let started = false
+    let questionCount = 0
+    const raw = await streamObject(
+      agent,
       [
         {
           role: 'user',
@@ -60,26 +64,24 @@ const extractStep = createStep({
         modelSettings: { maxOutputTokens: 64000, maxRetries: 1 },
         providerOptions: anthropicOptions('medium'),
       },
+      {
+        progress,
+        onText: text => {
+          if (!started) {
+            started = true
+            void progress.setPhase('設問を読み取り中')
+          }
+          // "number": が出るたびに設問 1 件分が始まったとみなす (目安)
+          const n = (text.match(/"number"\s*:/g) ?? []).length
+          if (n) {
+            questionCount += n
+            progress.tick(0, `設問 ${questionCount} 件目まで出力`)
+          }
+        },
+      },
     )
-    let started = false
-    let questionCount = 0
-    for await (const chunk of stream.fullStream) {
-      if (chunk.type === 'text-delta') {
-        if (!started) {
-          started = true
-          await progress.setPhase('設問を読み取り中')
-        }
-        const text = chunk.payload.text
-        // "number": が出るたびに設問 1 件分が始まったとみなす (目安)
-        const n = (text.match(/"number"\s*:/g) ?? []).length
-        if (n) questionCount += n
-        progress.tick(text.length, questionCount ? `設問 ${questionCount} 件目まで出力` : undefined)
-      } else if (chunk.type === 'error') {
-        throw chunk.payload.error instanceof Error ? chunk.payload.error : new Error(String((chunk.payload.error as { message?: string })?.message ?? chunk.payload.error))
-      }
-    }
     await progress.setPhase('読み取り結果を検証中', `${progress.outputChars.toLocaleString()} 文字`)
-    const exam = extractedExamSchema.parse(await stream.object)
+    const exam = extractedExamSchema.parse(raw)
     // passageId が passages に無い設問は参照を外して注意として残す
     const ids = new Set(exam.passages.map(p => p.id))
     for (const q of exam.questions) {

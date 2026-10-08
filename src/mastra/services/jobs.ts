@@ -6,7 +6,8 @@ import { anthropicOptions } from '../config.ts'
 import { ensureSchema, getDb, type Row } from '../db/client.ts'
 import { getExam, saveExam } from '../db/repo.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
-import { JOB_ID_KEY, type JobProgress } from './job-progress.ts'
+import { JOB_ID_KEY, progressReporter, type JobProgress } from './job-progress.ts'
+import { streamObject } from './llm.ts'
 
 /**
  * 管理画面から起動する非同期ジョブ。
@@ -169,20 +170,24 @@ const solveSchema = z.object({
 })
 
 /** 正解が無い過去問に AI 推定の正解と根拠を付ける (CLI の solve と同じ処理) */
-export async function solveExam(mastra: Mastra, examId: string) {
+export async function solveExam(mastra: Mastra, examId: string, jobId?: string) {
+  const progress = progressReporter(jobId, '正解と根拠を推定中')
   const rec = await getExam(examId)
   if (!rec) throw new Error(`exam not found: ${examId}`)
   const targets = rec.exam.questions.filter(q => !q.correctLabel || q.choices.some(c => !c.rationale))
   if (!targets.length) return { examId, solved: [], message: 'すべての設問に正解と根拠が付いています' }
   const agent = mastra.getAgentById('exam-reviewer')
-  const res = await agent.generate(
+  await progress.flush()
+  const raw = await streamObject(
+    agent,
     `次の過去問設問について、正解の選択肢と、各選択肢が正解/不正解である根拠を示してください。確信が持てない場合は confidence を下げてください。\n\n${JSON.stringify({
       passages: rec.exam.passages,
       questions: targets.map(q => ({ number: q.number, passageId: q.passageId, passage: q.passage, stem: q.stem, choices: q.choices.map(c => ({ label: c.label, text: c.text })) })),
     })}`,
     { structuredOutput: { schema: solveSchema, jsonPromptInjection: 'auto' }, modelSettings: { maxOutputTokens: 32000 }, providerOptions: anthropicOptions('high') },
+    { progress },
   )
-  const parsed = solveSchema.parse(res.object)
+  const parsed = solveSchema.parse(raw)
   for (const a of parsed.answers) {
     const q = rec.exam.questions.find(q => q.number === a.number)
     if (!q) continue
@@ -202,7 +207,7 @@ export async function solveExam(mastra: Mastra, examId: string) {
 export async function startSolveJob(mastra: Mastra, examId: string, title: string): Promise<Job> {
   const id = randomUUID()
   await insertJob({ id, kind: 'solve', title, input: { examId } })
-  void solveExam(mastra, examId)
+  void solveExam(mastra, examId, id)
     .then(result => updateJob(id, { status: 'success', result }))
     .catch(err => updateJob(id, { status: 'failed', error: errorMessage(err) }))
   return (await getJob(id))!

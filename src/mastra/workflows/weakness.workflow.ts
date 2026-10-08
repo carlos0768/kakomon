@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { anthropicOptions } from '../config.ts'
 import { getExam, getSpec, listAttempts, saveWeaknessReport, type ExamRecord } from '../db/repo.ts'
 import { coachingSchema, weaknessReportSchema } from '../schemas/grading.ts'
+import { streamObject } from '../services/llm.ts'
 import { computeWeakness } from '../services/weakness.ts'
 
 /**
@@ -62,7 +63,8 @@ const coachStep = createStep({
     const { report, wrongExamples } = inputData
     const agent = mastra.getAgentById('exam-coach')
     try {
-      const res = await agent.generate(
+      const raw = await streamObject(
+        agent,
         `受験者の成績集計です。summary / rootCauses / studyPlan を作成してください。
 
 集計 (JSON):
@@ -76,7 +78,7 @@ ${JSON.stringify(wrongExamples)}`,
           providerOptions: anthropicOptions('medium'),
         },
       )
-      report.coaching = coachingSchema.parse(res.object)
+      report.coaching = coachingSchema.parse(raw)
     } catch (err) {
       report.coaching = {
         summary: `講評の生成に失敗しました (${err instanceof Error ? err.message : String(err)})。集計結果のみ表示しています。`,
