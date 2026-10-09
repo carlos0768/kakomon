@@ -69,12 +69,14 @@ export function adminUiHtml(): string {
 
     <section class="card" id="specs">
       <h2>2. 傾向を分析して要件定義を作る</h2>
+      <h3>分析する過去問 <span class="muted" style="font-weight:normal">(<a href="#" onclick="return checkExams(true)">すべて選ぶ</a> / <a href="#" onclick="return checkExams(false)">すべて外す</a>)</span></h3>
+      <div id="anExams"></div>
       <div class="row">
         <input id="anTitle" placeholder="試験名" style="min-width:200px">
         <input id="anFocus" placeholder="追加指示 (例: 直近3年を重視)" style="min-width:260px">
         <button id="analyzeBtn">分析を実行</button>
       </div>
-      <p class="muted">登録済みの過去問すべてを対象にします。2 年度以上あると精度が上がります。</p>
+      <p class="muted">チェックした過去問だけを対象にします (別の試験の過去問は混ざりません)。同じ試験を 2 年度以上選ぶと精度が上がります。</p>
       <div class="err" id="analyzeErr"></div>
       <h3>要件定義一覧</h3>
       <div id="specList"></div>
@@ -168,7 +170,19 @@ async function loadExams() {
     : '<p class="muted">まだ登録されていません。上のフォームから PDF をアップロードしてください。</p>';
   // 参照過去問の選択肢
   $('#genRef').innerHTML = '<option value="">見た目の参照: 最新の過去問</option>' + past.map(e => '<option value="' + e.examId + '">' + esc((e.year ?? '') + ' ' + e.title) + '</option>').join('');
+  // 分析対象の選択 (再読み込みしてもチェック状態は保つ。新しく登録された過去問は既定でチェック)
+  const checked = new Set([...document.querySelectorAll('#anExams input')].filter(i => i.checked).map(i => i.value));
+  const known = new Set([...document.querySelectorAll('#anExams input')].map(i => i.value));
+  $('#anExams').innerHTML = past.length ? past.map(e =>
+    '<label class="row" style="gap:6px"><input type="checkbox" value="' + e.examId + '"' + (!known.has(e.examId) || checked.has(e.examId) ? ' checked' : '') + '> '
+    + esc((e.year ?? '-') + ' ' + (e.session ?? '') + ' ' + e.title) + ' <span class="muted">(' + e.questionCount + '問' + (e.answeredCount < e.questionCount ? '、正解 ' + e.answeredCount + '/' + e.questionCount : '') + ')</span></label>').join('')
+    : '<p class="muted">過去問を登録すると、ここに選択肢が出ます。</p>';
+  // 要件定義一覧の「対象の過去問」表示は年度を使うので、過去問が読めたら描き直す
+  if (specs.length) renderSpecs();
 }
+window.checkExams = on => { for (const i of document.querySelectorAll('#anExams input')) i.checked = on; return false; };
+function examLabel(examId) { const e = exams.find(x => x.examId === examId); return e ? String(e.year ?? '-') + (e.session ? ' ' + e.session : '') : '(削除済み)'; }
+function specSources(s) { const ids = s.sourceExamIds || []; return ids.length ? ids.map(examLabel).join(', ') : '-'; }
 // プレビューはトークン付きで開けないので fetch してから新規タブに書き出す
 window.openPreview = async (ev, href) => {
   ev.preventDefault();
@@ -195,16 +209,25 @@ $('#uploadForm').onsubmit = async e => {
 // ---------- 要件定義 ----------
 async function loadSpecs() {
   specs = (await api('/kakomon/admin/specs')).specs;
-  $('#specList').innerHTML = specs.length ? '<table><tr><th>作成</th><th>試験名</th><th>設問数</th><th>分野</th><th></th></tr>' + specs.map(s =>
-    '<tr><td>' + fmt(s.createdAt) + '</td><td>' + esc(s.title) + '</td><td>' + s.questionCount + '</td><td class="muted">' + s.domains.map(d => esc(d.domain) + ' ' + Math.round(d.share * 100) + '%').join(', ') + '</td>'
+  renderSpecs();
+}
+function renderSpecs() {
+  $('#specList').innerHTML = specs.length ? '<table><tr><th>作成</th><th>試験名</th><th>対象の過去問</th><th>設問数</th><th>分野</th><th></th></tr>' + specs.map(s =>
+    '<tr><td>' + fmt(s.createdAt) + '</td><td>' + esc(s.title) + '</td><td class="muted">' + esc(specSources(s)) + '</td><td>' + s.questionCount + '</td><td class="muted">' + s.domains.map(d => esc(d.domain) + ' ' + Math.round(d.share * 100) + '%').join(', ') + '</td>'
     + '<td><button class="secondary" onclick="viewSpec(\\'' + s.specId + '\\')">内容を見る</button></td></tr>').join('') + '</table>'
     : '<p class="muted">まだありません。過去問を登録してから「分析を実行」を押してください。</p>';
-  $('#genSpec').innerHTML = specs.length ? specs.map(s => '<option value="' + s.specId + '">' + esc(s.title) + ' (' + fmt(s.createdAt) + ')</option>').join('') : '<option value="">要件定義がありません</option>';
+  const selected = $('#genSpec').value;
+  $('#genSpec').innerHTML = specs.length ? specs.map(s => '<option value="' + s.specId + '">' + esc(s.title) + ' [' + esc(specSources(s)) + '] (' + fmt(s.createdAt) + ')</option>').join('') : '<option value="">要件定義がありません</option>';
+  if (selected && specs.some(s => s.specId === selected)) $('#genSpec').value = selected;
 }
 window.viewSpec = async id => { const r = await fetch('/kakomon/admin/specs/' + id + '/markdown', { headers: headers() }); $('#specView').textContent = await r.text(); $('#specView').style.display = ''; };
 $('#analyzeBtn').onclick = async () => {
   $('#analyzeErr').textContent = '';
-  try { await api('/kakomon/admin/analyze', { method: 'POST', body: JSON.stringify({ title: $('#anTitle').value || undefined, focus: $('#anFocus').value || undefined }) }); await loadJobs(); location.hash = '#jobs'; }
+  const examIds = [...document.querySelectorAll('#anExams input')].filter(i => i.checked).map(i => i.value);
+  if (examIds.length === 0) { $('#analyzeErr').textContent = '分析する過去問を 1 件以上チェックしてください'; return; }
+  const unanswered = examIds.map(id => exams.find(e => e.examId === id)).filter(e => e && e.answeredCount < e.questionCount);
+  if (unanswered.length && !confirm('正解が未推定の過去問が含まれています (' + unanswered.map(e => e.year ?? e.title).join(', ') + ')。正解なしで分析しますか？')) return;
+  try { await api('/kakomon/admin/analyze', { method: 'POST', body: JSON.stringify({ examIds, title: $('#anTitle').value || undefined, focus: $('#anFocus').value || undefined }) }); await loadJobs(); location.hash = '#jobs'; }
   catch (e) { $('#analyzeErr').textContent = e.message; }
 };
 

@@ -7,6 +7,7 @@ import { renderExamFiles } from '../render/pdf.ts'
 import { extractedExamSchema, layoutProfileSchema, passageSchema, questionSchema, type ExtractedExam } from '../schemas/exam.ts'
 import { reviewResultSchema } from '../schemas/spec.ts'
 import { applyRevision, batchSizeFromEnv, mergeBatch, planBatches, type GeneratedParts } from '../services/generation-plan.ts'
+import { setExamScope } from '../services/exam-scope.ts'
 import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
 import { streamObject } from '../services/llm.ts'
 import { specToMarkdown } from '../services/spec-markdown.ts'
@@ -72,9 +73,15 @@ const generateStep = createStep({
     const spec = await getSpec(inputData.specId)
     if (!spec) throw new Error(`要件定義が見つかりません: ${inputData.specId}`)
 
+    // 参照過去問の既定は「要件定義の元になった過去問のうち最新」。別の試験の過去問が登録されていても混ざらない
+    const pastExams = await listExams({ kind: 'past' })
     const reference = inputData.referenceExamId
       ? await getExam(inputData.referenceExamId)
-      : (await listExams({ kind: 'past' }))[0]
+      : (pastExams.find(e => spec.spec.sourceExamIds.includes(e.id)) ?? pastExams[0])
+    // 作問・校閲のツール (一覧・検索・取得) が読める過去問を、要件定義の元の過去問 + 参照過去問 +
+    // 同じ要件定義から作った予想問題 (重複出題の確認用) に限定する
+    const scope = [...new Set([...spec.spec.sourceExamIds, ...(reference ? [reference.id] : []), ...(await listExams({ kind: 'predicted' })).filter(e => e.specId === inputData.specId).map(e => e.id)])]
+    if (requestContext && scope.length) setExamScope(requestContext, scope)
     const layout = reference?.exam.layout ?? layoutProfileSchema.parse({})
     const count = inputData.questionCount ?? spec.spec.format.questionCount
     const plans = planBatches(count, spec.spec.domains, batchSizeFromEnv())
@@ -135,6 +142,7 @@ ${specToMarkdown(spec.spec, inputData.specId)}
 - title / instructions は不要。passages / questions / designNotes だけを JSON で出力
 ${done.length ? `- すでに作成済みの設問 (題材・問い方の重複を避ける):\n${JSON.stringify(done)}` : ''}`,
         {
+          requestContext,
           structuredOutput: { schema: generatedBatchSchema, jsonPromptInjection: true },
           maxSteps: 60,
           // 思考トークンも上限に含まれる (15 問の出力 ~1.5 万 + 思考)
@@ -178,6 +186,7 @@ ${JSON.stringify(acc.questions.filter(q => !flagged.has(q.number)).map(q => ({ n
 指摘された設問だけを修正 (必要なら同じ number で差し替え) して出力してください。指摘のない設問は出力しないでください。
 資料文を直す場合は同じ id で passages に含めてください。出力は passages / questions / designNotes の JSON のみ。`,
           {
+            requestContext,
             structuredOutput: { schema: revisionSchema, jsonPromptInjection: true },
             maxSteps: 60,
             // 思考トークンも上限に含まれるため、出力 (~1.5 万) + 思考の余裕を取る
@@ -230,6 +239,7 @@ ${JSON.stringify(acc.questions.filter(q => !flagged.has(q.number)).map(q => ({ n
 予想問題 (JSON):
 ${JSON.stringify({ title: inputData.title, passages: acc.passages, questions: acc.questions })}`,
         {
+          requestContext,
           structuredOutput: { schema: reviewResultSchema, jsonPromptInjection: true },
           maxSteps: 40,
           modelSettings: { maxOutputTokens: 16000 },

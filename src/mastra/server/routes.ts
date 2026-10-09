@@ -497,6 +497,13 @@ export const apiRoutes = [
         .object({ title: z.string().optional(), focus: z.string().optional(), examIds: z.array(z.string()).optional(), specId: z.string().optional() })
         .safeParse(await c.req.json().catch(() => ({})))
       if (!body.success) return c.json({ error: body.error.issues }, 400)
+      if (body.data.examIds) {
+        // 画面から選んだ過去問だけを対象にする。存在しない ID や予想問題の ID は弾く
+        const past = await listExams({ kind: 'past' })
+        const unknown = body.data.examIds.filter(id => !past.some(e => e.id === id))
+        if (unknown.length) return c.json({ error: `分析対象の過去問が見つかりません: ${unknown.join(', ')}` }, 400)
+        if (body.data.examIds.length === 0) return c.json({ error: '分析対象の過去問を 1 件以上選んでください' }, 400)
+      }
       if (await findRunningJob('analyze')) return c.json({ error: '傾向分析がすでに実行中です。終わるまで待ってください' }, 409)
       const pre = await preflightOr400(c)
       if (pre) return pre
