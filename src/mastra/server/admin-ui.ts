@@ -250,11 +250,22 @@ function renderDrafts() {
   html += '<h3>予想問題</h3>' + (predicted.length ? '<table><tr><th>タイトル</th><th>設問</th><th>状態</th><th></th></tr>' + predicted.map(e =>
     '<tr><td>' + esc(e.title) + '</td><td>' + e.questionCount + '</td><td>' + tag(e.status) + '</td><td class="row">'
     + '<button class="secondary" onclick="previewExam(\\'' + e.examId + '\\')">確認</button>'
+    + '<button class="secondary" onclick="downloadExam(\\'' + e.examId + '\\',\\'questions\\')">問題DL</button>'
+    + '<button class="secondary" onclick="downloadExam(\\'' + e.examId + '\\',\\'answers\\')">解答DL</button>'
     + (e.status === 'published' ? '<a class="muted" href="/kakomon/exams/' + e.examId + '/print" target="_blank">受験者向け表示</a><button class="secondary" onclick="setStatus(\\'' + e.examId + '\\',\\'archived\\')">非公開にする</button>'
       : (e.status === 'archived' || e.status === 'review') ? '<button onclick="setStatus(\\'' + e.examId + '\\',\\'published\\')">公開する</button>' : '')
     + '</td></tr>').join('') + '</table>' : '<p class="muted">まだありません。</p>');
   $('#draftList').innerHTML = html;
 }
+// 認証ヘッダが要るので fetch → Blob にしてダウンロードさせる
+window.downloadExam = async (id, kind) => {
+  try {
+    const r = await fetch('/kakomon/admin/exams/' + id + '/download?kind=' + kind, { headers: headers() });
+    if (!r.ok) throw new Error('ダウンロードに失敗しました (' + r.status + ')');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = id + '-' + kind + '.html';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) { alert(e.message); }
+};
 window.previewExam = async id => { const r = await fetch('/kakomon/admin/exams/' + id + '/preview', { headers: headers() }); const html = await r.text(); const w = window.open('', '_blank'); w.document.open(); w.document.write(html); w.document.close(); };
 window.decide = async (jobId, approved) => {
   if (!confirm(approved ? 'この予想問題を公開します。よろしいですか？' : 'この下書きを却下します。よろしいですか？')) return;
