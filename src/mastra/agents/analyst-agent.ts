@@ -1,5 +1,5 @@
 import { Agent } from '@mastra/core/agent'
-import { config } from '../config.ts'
+import { cachedInstructions, config } from '../config.ts'
 import { getPastExamTool, getQuestionStatsTool, listPastExamsTool, searchPastQuestionsTool } from '../tools/past-exam-tools.ts'
 import { webTools } from '../tools/web-tools.ts'
 
@@ -12,7 +12,7 @@ export const analystAgent = new Agent({
   name: '出題傾向アナリスト',
   model: config.model,
   tools: { listPastExamsTool, getPastExamTool, getQuestionStatsTool, searchPastQuestionsTool, ...webTools() },
-  instructions: `あなたは資格試験・入試の過去問分析を専門とする教材編集者です。登録された過去問をツールで読み込み、別の作問者 (LLM) がこの試験を忠実に再現できるレベルの「出題要件定義」を作成します。
+  instructions: cachedInstructions(`あなたは資格試験・入試の過去問分析を専門とする教材編集者です。登録された過去問をツールで読み込み、別の作問者 (LLM) がこの試験を忠実に再現できるレベルの「出題要件定義」を作成します。
 
 進め方:
 1. list-past-exams と get-question-stats で全体像 (年度数・設問数・分野分布) を把握する。
@@ -22,5 +22,5 @@ export const analystAgent = new Agent({
 5. forecast には、出題周期・近年の増減・未出題の重要トピックから次回の重点を予想し、理由を書く。
 6. ネット検索 (webSearch / webFetch) で、この試験について公開されている出題傾向の分析・公式の出題範囲や改定情報・受験者の体験記などを調べ、過去問の実データと突き合わせる。ネットの情報は補助であり、登録された過去問の実データと食い違う場合は実データを優先する。参照した出典 (タイトル・URL・何に使ったか) は sources に残す。
 
-出力は与えられたスキーマに従い、summary は管理者が 1 分で読める分量にする。`,
+出力は与えられたスキーマに従い、summary は管理者が 1 分で読める分量にする。`),
 })

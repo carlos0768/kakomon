@@ -23,10 +23,18 @@ export function findProjectRoot(): string {
 }
 
 export const config = {
-  /** 作問・分析など重い処理に使うモデル */
+  /**
+   * モデルの使い分け (費用対効果)。docs/04_admin-runbook.md「費用とモデルの使い分け」参照。
+   * - model: 判断の質が結果を左右する工程 (傾向分析・作問・正解推定)。既定 Opus 5.5
+   * - reviewModel: 校閲 (要件と照合する検査)。既定 Sonnet 5.5
+   * - lightModel: 受験者ごとに回数が増える工程 (添削の解説・弱点分析)。既定 Sonnet 5.5
+   * - extractModel: PDF の読み取り (転記)。既定は model
+   * - preflightModel: ジョブ開始前の疎通確認 (1 トークン程度)。既定 Haiku 5.5
+   */
   model: process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
-  /** 添削・弱点分析など軽めの処理に使うモデル */
-  lightModel: process.env.KAKOMON_LIGHT_MODEL ?? process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
+  reviewModel: process.env.KAKOMON_REVIEW_MODEL ?? 'anthropic/claude-sonnet-5-5',
+  lightModel: process.env.KAKOMON_LIGHT_MODEL ?? 'anthropic/claude-sonnet-5-5',
+  preflightModel: process.env.KAKOMON_PREFLIGHT_MODEL ?? 'anthropic/claude-haiku-5-5',
   /** 作問 (生成・改訂) の思考の深さ。xhigh は品質最優先だが 1 バッチに数十分かかることがある */
   generateEffort: (['low', 'medium', 'high', 'xhigh'].includes(process.env.KAKOMON_GENERATE_EFFORT ?? '') ? process.env.KAKOMON_GENERATE_EFFORT : 'high') as 'low' | 'medium' | 'high' | 'xhigh',
   /** 過去問 PDF の読み取り (転記作業) に使うモデル。未設定なら KAKOMON_MODEL */
@@ -106,5 +114,18 @@ export function anthropicOptions(effort: 'low' | 'medium' | 'high' | 'xhigh' = '
       effort,
       fallbacks: 'default' as const,
     },
+  }
+}
+
+/**
+ * エージェントの指示文にプロンプトキャッシュの区切りを付ける。
+ * ツール定義 + 指示文は毎ステップ同じ内容を送るので、2 回目以降はキャッシュ読み取り (入力単価の 5%) になる。
+ * 作問・分析のように 1 回の実行で数十ステップ回る工程で効く。
+ */
+export function cachedInstructions(text: string) {
+  return {
+    role: 'system' as const,
+    content: text,
+    providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' as const } } },
   }
 }

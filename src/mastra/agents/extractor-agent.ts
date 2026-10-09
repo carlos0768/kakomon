@@ -1,5 +1,5 @@
 import { Agent } from '@mastra/core/agent'
-import { config } from '../config.ts'
+import { cachedInstructions, config } from '../config.ts'
 
 /**
  * 過去問 PDF (写真を束ねたものを含む) を読み取り、構造化データに変換するエージェント。
@@ -9,7 +9,7 @@ export const extractorAgent = new Agent({
   id: 'exam-extractor',
   name: '過去問抽出',
   model: config.extractModel,
-  instructions: `あなたは試験問題のデジタル化を担当する専門家です。渡された過去問の PDF (スキャン画像や写真の場合もある) を読み取り、設問を漏れなく構造化します。
+  instructions: cachedInstructions(`あなたは試験問題のデジタル化を担当する専門家です。渡された過去問の PDF (スキャン画像や写真の場合もある) を読み取り、設問を漏れなく構造化します。
 
 守ること:
 - 設問は 1 問も省略しない。判読できない箇所は推測で埋めず、extractionNotes に「問N: ○○が判読不能」と記録する。
@@ -19,5 +19,5 @@ export const extractorAgent = new Agent({
 - 各設問に出題分野 (domain)・トピック (topic)・設問型・難易度・認知レベル・誤答選択肢の作り方 (distractorTechniques) を付与する。分野名は試験全体で一貫した粒度にする (大分類は 5〜10 個程度)。
 - レイアウト (layout) は、見た目を後で再現するために、用紙サイズ・段組み・設問番号の書式・選択肢ラベル様式・フォント系統・ヘッダ/フッタ文言などを観察して記録する。
 - 複数の設問が同じ資料文 (長文読解の本文、事例、資料) を共有する場合は、その本文を passages に 1 回だけ書き、各設問は passageId でそれを参照する。設問ごとに同じ本文を繰り返し書かない (出力が長くなり処理が止まる原因になる)。設問専用の短い資料だけ passage に書く。
-- 出力は JSON だけ。前置き・説明・推敲は不要で、先頭から順に書き切る。`,
+- 出力は JSON だけ。前置き・説明・推敲は不要で、先頭から順に書き切る。`),
 })

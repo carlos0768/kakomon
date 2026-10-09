@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Mastra } from '@mastra/core'
 import { RequestContext } from '@mastra/core/request-context'
 import { z } from 'zod'
-import { anthropicOptions } from '../config.ts'
+import { anthropicOptions, config } from '../config.ts'
 import { ensureSchema, getDb, type Row } from '../db/client.ts'
 import { getExam, saveExam } from '../db/repo.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
@@ -218,7 +218,8 @@ export async function solveExam(mastra: Mastra, examId: string, jobId?: string) 
       passages: rec.exam.passages,
       questions: targets.map(q => ({ number: q.number, passageId: q.passageId, passage: q.passage, stem: q.stem, choices: q.choices.map(c => ({ label: c.label, text: c.text })) })),
     })}`,
-    { structuredOutput: { schema: solveSchema, jsonPromptInjection: 'auto' }, modelSettings: { maxOutputTokens: 32000 }, providerOptions: anthropicOptions('high') },
+    // 正解推定は採点の正解データになるので、校閲エージェントの既定 (Sonnet) ではなく判断用モデル (Opus) で回す
+    { structuredOutput: { schema: solveSchema, jsonPromptInjection: 'auto' }, model: config.model, modelSettings: { maxOutputTokens: 32000 }, providerOptions: anthropicOptions('high') },
     { progress },
   )
   const parsed = solveSchema.parse(raw)

@@ -51,11 +51,15 @@ data/out/                  生成物 (git 管理外)
 | エージェント | モデル設定 | ツール | 出力 |
 |---|---|---|---|
 | `exam-extractor` | `KAKOMON_EXTRACT_MODEL` (既定 `KAKOMON_MODEL`), effort medium, stream | なし (PDF を直接読む) | `ExtractedExam` (共有資料文は `passages`、設問は `passageId` で参照) |
-| `exam-analyst` | `KAKOMON_MODEL`, effort high, maxSteps 40 | list / get / stats / search / webSearch / webFetch | `ExamSpec` (参照した出典は `sources`) |
-| `exam-generator` | `KAKOMON_MODEL`, effort xhigh, maxSteps 60 | spec / list / get / search / semantic / webSearch / webFetch | `generatedExam` (questions + designNotes) |
-| `exam-reviewer` | `KAKOMON_MODEL`, effort high | spec / search / get / webSearch / webFetch | `ReviewResult` |
-| `exam-grader` | `KAKOMON_LIGHT_MODEL`, effort medium | なし | 解説バッチ |
-| `exam-coach` | `KAKOMON_LIGHT_MODEL`, effort medium | なし | coaching |
+| `exam-analyst` | `KAKOMON_MODEL` (既定 Opus 5.5), effort high, maxSteps 40 | list / get / stats / search / webSearch / webFetch | `ExamSpec` (参照した出典は `sources`) |
+| `exam-generator` | `KAKOMON_MODEL` (既定 Opus 5.5), effort `KAKOMON_GENERATE_EFFORT` (既定 high), バッチ生成, maxSteps 60 | spec / list / get / search / semantic / webSearch / webFetch | バッチごとの questions + passages + designNotes |
+| `exam-reviewer` (校閲) | `KAKOMON_REVIEW_MODEL` (既定 Sonnet 5.5), effort medium | spec / search / get / webSearch / webFetch | `ReviewResult` |
+| `exam-reviewer` (正解推定) | 呼び出し時に `KAKOMON_MODEL` (Opus 5.5) で上書き, effort high | 同上 | 正解と根拠 |
+| `exam-grader` | `KAKOMON_LIGHT_MODEL` (既定 Sonnet 5.5), effort medium | なし | 解説バッチ |
+| `exam-coach` | `KAKOMON_LIGHT_MODEL` (既定 Sonnet 5.5), effort medium | なし | coaching |
+| (疎通確認) | `KAKOMON_PREFLIGHT_MODEL` (既定 Haiku 5.5) | なし | ジョブ開始前の 1 回 |
+
+全エージェントの指示文にはプロンプトキャッシュの区切り (`cacheControl: ephemeral`) を付けている。ツール定義 + 指示文は毎ステップ同じ内容を送るので、2 回目以降はキャッシュ読み取り (入力単価の 5%) になる。
 
 `webSearch` は Anthropic のサーバー側ウェブ検索 (Mastra の `webSearchTool` がモデル提供元に合わせて解決する)、`webFetch` は Mastra 内蔵の URL 取得。公開されている出題傾向の分析・公式の出題範囲・法令の最新情報を補助的に使い、登録された過去問の実データを優先する。`KAKOMON_WEB_SEARCH=0` で無効化。
 
@@ -129,4 +133,4 @@ Studio (`/api/workflows/*`) と CLI からも同じワークフローを起動�
 - **デプロイ**: Vercel は `docs/05_vercel-deployment.md`。DB は Supabase (PostgreSQL)、PDF 生成と取り込みは手元の CLI。
 - **UI**: `/kakomon` は参照実装。Next.js へ移す場合は `src/mastra` をそのまま置き、Route Handler から `mastra.getWorkflow(...)` を呼ぶ (Mastra 公式の Next.js ガイドに準拠)。
 - **ベクトル検索**: 既定は無効。過去問が数百問を超える、または言い回しの違う類題検出を強化したい場合に `EMBEDDING_MODEL` を設定する。
-- **コスト**: 1 回分の生成は 作問 (xhigh, 数十ステップ) + 校閲 + 改訂 で Opus 5.5 を複数回呼ぶ。試算は Studio のトレースで `usage` を確認する。
+- **コスト**: モデルの使い分けと概算は `docs/04_admin-runbook.md`「費用とモデルの使い分け」。

@@ -175,7 +175,7 @@ ${JSON.stringify({ title: inputData.title, passages: acc.passages, questions: ac
           structuredOutput: { schema: reviewResultSchema, jsonPromptInjection: true },
           maxSteps: 40,
           modelSettings: { maxOutputTokens: 16000 },
-          providerOptions: anthropicOptions('high'),
+          providerOptions: anthropicOptions('medium'),
         },
         { progress },
       )

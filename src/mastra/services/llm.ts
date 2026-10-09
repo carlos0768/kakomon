@@ -18,6 +18,8 @@ export interface StreamProgress {
 /** structuredOutput 付きの stream オプション。スキーマの型は呼び出し側の parse に任せるので unknown */
 export type StreamObjectOptions = AgentExecutionOptionsBase<unknown> & {
   structuredOutput: { schema: unknown; jsonPromptInjection?: boolean | 'auto'; model?: unknown }
+  /** エージェント既定のモデルを呼び出し単位で上書きする (例: 校閲エージェントを正解推定では Opus で使う) */
+  model?: string
 }
 
 export async function streamObject(
