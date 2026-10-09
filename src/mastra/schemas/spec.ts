@@ -39,6 +39,19 @@ export const questionPatternSchema = z.object({
   examples: z.array(z.string()).default([]),
 })
 
+/** 大問 1 つ分の構成。過去問の大問の数と、大問ごとの小問数をそのまま再現するための要件 */
+export const sectionSpecSchema = z.object({
+  number: z.number().int().min(1).describe('大問番号 (第1問 = 1)'),
+  title: z.string().optional().describe('大問の見出し (過去問の表記のまま。例: "第1問")'),
+  instruction: z.string().optional().describe('大問の冒頭の指示文 (例: "次の英文を読み、後の問いに答えよ。")'),
+  questionCount: z.number().int().min(1).describe('この大問の小問数'),
+  domains: z.array(z.string()).default([]).describe('この大問で出す分野 (domains の分野名)。決まっていなければ空'),
+  /** 小問が 1 つの資料文 (長文・事例) を共有する大問か */
+  sharedPassage: z.boolean().default(false).describe('小問がすべて 1 つの資料文 (長文・事例) を共有する大問なら true'),
+  notes: z.string().optional().describe('この大問の特徴 (設問型・難易度・配点など)'),
+})
+export type SectionSpec = z.infer<typeof sectionSpecSchema>
+
 export const examSpecSchema = z.object({
   specVersion: z.literal(1).default(1),
   title: z.string().describe('対象試験名'),
@@ -53,6 +66,11 @@ export const examSpecSchema = z.object({
     stemStyle: z.string().describe('問題文の文体・敬体/常体・長さの目安'),
     choiceStyle: z.string().describe('選択肢の文体・長さ・並び順の規則'),
     numberingNotes: z.string().optional(),
+    /** 大問構成。大問の区切りがない試験は空。空でなければ小問数の合計が questionCount になる */
+    sections: z
+      .array(sectionSpecSchema)
+      .default([])
+      .describe('大問構成 (大問ごとの小問数)。過去問の大問の数・小問数をそのまま再現する。大問の区切りがない試験は空'),
   }),
   /** 分野構成と比率 */
   domains: z.array(domainWeightSchema).min(1),

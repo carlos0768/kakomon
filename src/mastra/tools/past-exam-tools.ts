@@ -1,7 +1,7 @@
 import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { aggregateQuestions, getExam, getSpec, listExams, searchQuestions } from '../db/repo.ts'
-import { questionSchema, passageSchema } from '../schemas/exam.ts'
+import { questionSchema, passageSchema, sectionSchema } from '../schemas/exam.ts'
 import { examScopeFrom, restrictToScope } from '../services/exam-scope.ts'
 
 /**
@@ -51,7 +51,7 @@ export const listPastExamsTool = createTool({
 export const getPastExamTool = createTool({
   id: 'get-past-exam',
   description:
-    '過去問 1 回分の全設問 (問題文・選択肢・正解・分野・難易度・作問テクニック) を返す。量が多いので必要な回だけ呼ぶこと。',
+    '過去問 1 回分の全設問 (問題文・選択肢・正解・分野・難易度・作問テクニック) と大問の見出しを返す。設問の section は所属する大問。量が多いので必要な回だけ呼ぶこと。',
   inputSchema: z.object({
     examId: z.string(),
     /** 省略時は全設問 */
@@ -63,6 +63,7 @@ export const getPastExamTool = createTool({
     year: z.number().optional(),
     instructions: z.array(z.string()),
     passages: z.array(passageSchema).describe('複数の設問で共有される資料文。設問の passageId が参照する'),
+    sections: z.array(sectionSchema).describe('大問の見出しと指示文。設問の section が参照する'),
     questions: z.array(questionSchema),
   }),
   execute: async ({ examId, numbers }, { requestContext }) => {
@@ -77,6 +78,7 @@ export const getPastExamTool = createTool({
       year: rec.year,
       instructions: rec.exam.instructions,
       passages: rec.exam.passages,
+      sections: rec.exam.sections,
       questions: rec.exam.questions.filter(q => !set || set.has(q.number)),
     }
   },

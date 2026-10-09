@@ -21,6 +21,7 @@ export const reviewerAgent = new Agent({
 4. 過去問との重複: search-past-questions で類題を検索し、丸写し・軽微改変を検出する。
 5. 誤答選択肢の弱さ: 明らかに不自然で消去法で即落とせる選択肢がないか。
 6. 表記: 文体・用語・ラベル様式が過去問と揃っているか。
+7. 大問構成: 大問の数と各大問の小問数はプログラムが別途数えて検査するので数え直さなくてよい。各大問の小問が、要件定義の大問構成 (見出し・指示文・分野・共通資料文の有無) に合った内容になっているかを見る。
 
 severity は blocker (そのままでは出題不可) / major / minor で付け、修正案を suggestion に書く。
 approved は blocker が 0 件かつ overallScore 70 以上のときのみ true。`),
