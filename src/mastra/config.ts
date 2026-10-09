@@ -27,6 +27,8 @@ export const config = {
   model: process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
   /** 添削・弱点分析など軽めの処理に使うモデル */
   lightModel: process.env.KAKOMON_LIGHT_MODEL ?? process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
+  /** 作問 (生成・改訂) の思考の深さ。xhigh は品質最優先だが 1 バッチに数十分かかることがある */
+  generateEffort: (['low', 'medium', 'high', 'xhigh'].includes(process.env.KAKOMON_GENERATE_EFFORT ?? '') ? process.env.KAKOMON_GENERATE_EFFORT : 'high') as 'low' | 'medium' | 'high' | 'xhigh',
   /** 過去問 PDF の読み取り (転記作業) に使うモデル。未設定なら KAKOMON_MODEL */
   extractModel: process.env.KAKOMON_EXTRACT_MODEL ?? process.env.KAKOMON_MODEL ?? 'anthropic/claude-opus-5-5',
   /** libSQL の接続 URL。Studio / CLI / サーバで同じ DB を見るため絶対パスに解決する */
@@ -99,7 +101,8 @@ function resolveDbUrl(url: string): string {
 export function anthropicOptions(effort: 'low' | 'medium' | 'high' | 'xhigh' = 'high') {
   return {
     anthropic: {
-      thinking: { type: 'adaptive' as const },
+      // display: 'summarized' で思考の要約がストリームに流れる。長い思考中も進捗 (生存確認) を出すために使う
+      thinking: { type: 'adaptive' as const, display: 'summarized' as const },
       effort,
       fallbacks: 'default' as const,
     },

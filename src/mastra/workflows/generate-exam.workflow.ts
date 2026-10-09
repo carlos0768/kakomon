@@ -1,6 +1,6 @@
 import { createStep, createWorkflow } from '@mastra/core/workflows'
 import { z } from 'zod'
-import { anthropicOptions } from '../config.ts'
+import { anthropicOptions, config } from '../config.ts'
 import { getExam, getSpec, listExams, saveExam, updateExamStatus } from '../db/repo.ts'
 import { renderExamFiles } from '../render/pdf.ts'
 import { extractedExamSchema, layoutProfileSchema, passageSchema, questionSchema, type ExtractedExam } from '../schemas/exam.ts'
@@ -112,7 +112,7 @@ ${done.length ? `- すでに作成済みの設問 (題材・問い方の重複�
           structuredOutput: { schema: generatedBatchSchema, jsonPromptInjection: true },
           maxSteps: 60,
           modelSettings: { maxOutputTokens: 32000 },
-          providerOptions: anthropicOptions('xhigh'),
+          providerOptions: anthropicOptions(config.generateEffort),
         },
         { progress },
       )
@@ -144,7 +144,7 @@ ${issues}
           structuredOutput: { schema: revisionSchema, jsonPromptInjection: true },
           maxSteps: 60,
           modelSettings: { maxOutputTokens: 32000 },
-          providerOptions: anthropicOptions('xhigh'),
+          providerOptions: anthropicOptions(config.generateEffort),
         },
         { progress },
       )
