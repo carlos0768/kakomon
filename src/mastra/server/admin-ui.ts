@@ -192,7 +192,7 @@ async function loadExams() {
   exams = (await api('/kakomon/admin/exams')).exams;
   const past = exams.filter(e => e.kind === 'past');
   $('#examList').innerHTML = past.length ? '<table><tr><th>年度</th><th>試験名</th><th>設問</th><th>正解あり</th><th>備考</th><th></th></tr>' + past.map(e =>
-    '<tr><td>' + esc(e.year ?? '-') + ' ' + esc(e.session ?? '') + '</td><td>' + esc(e.title) + '</td><td>' + e.questionCount + '</td>'
+    '<tr><td>' + esc(e.year ?? '-') + ' ' + esc(e.session ?? '') + '</td><td>' + esc(e.title) + ' <button class="secondary small" data-act="rename:' + e.examId + '" data-exam="' + e.examId + '" onclick="renameExam(\\'' + e.examId + '\\')" title="試験名を変更">名称変更</button></td><td>' + e.questionCount + '</td>'
     + '<td class="' + (e.answeredCount < e.questionCount ? 'err' : '') + '">' + e.answeredCount + '/' + e.questionCount + '</td>'
     + '<td class="muted">' + esc((e.extractionNotes || []).slice(0, 2).join(' / ')) + '</td>'
     + '<td class="row"><a class="muted" href="/kakomon/admin/exams/' + e.examId + '/preview" target="_blank" onclick="return openPreview(event, this.href)">確認</a>'
@@ -222,6 +222,17 @@ window.openPreview = async (ev, href) => {
   const r = await fetch(url, { headers: headers() }); const html = await r.text();
   const w = window.open('', '_blank'); w.document.open(); w.document.write(html); w.document.close();
   return false;
+};
+// 試験名の変更 (正解推定・インポートの実行中は押せない。サーバ側でも断る)
+window.renameExam = examId => {
+  if (pending.has('rename:' + examId)) return;
+  const e = exams.find(x => x.examId === examId); if (!e) return;
+  const title = prompt('新しい試験名', e.title);
+  if (title == null || !title.trim() || title.trim() === e.title) return;
+  return act('rename:' + examId, async () => {
+    try { await api('/kakomon/admin/exams/' + examId + '/title', { method: 'POST', body: JSON.stringify({ title: title.trim() }) }); await loadExams(); }
+    catch (err) { alert(err.message); }
+  });
 };
 window.solve = examId => act('solve:' + examId, async () => { if (me && me.serverless) { alert('Vercel 上では実行できません。手元の管理画面から実行してください'); return; } try { await api('/kakomon/admin/exams/' + examId + '/solve', { method: 'POST' }); await loadJobs(); } catch (e) { alert(e.message); } });
 // 正解データ (解答・解説 PDF) のインポート: ファイル選択 → その過去問に反映するジョブを開始

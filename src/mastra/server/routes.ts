@@ -3,7 +3,7 @@ import { registerApiRoute } from '@mastra/core/server'
 import { z } from 'zod'
 import { config } from '../config.ts'
 import { ensureSchema, getDb } from '../db/client.ts'
-import { createAttempt, getAttempt, getExam, getWeaknessReport, listAttempts, listExams, listSpecs, updateExamStatus } from '../db/repo.ts'
+import { createAttempt, getAttempt, getExam, getWeaknessReport, listAttempts, listExams, listSpecs, renameExam, updateExamStatus } from '../db/repo.ts'
 import { answerSchema } from '../schemas/grading.ts'
 import { toPublicQuestion, type ExtractedExam } from '../schemas/exam.ts'
 import {
@@ -455,6 +455,20 @@ export const apiRoutes = [
       if (!body.success) return c.json({ error: body.error.issues }, 400)
       await updateExamStatus(c.req.param('examId'), body.data.status)
       return c.json({ ok: true })
+    },
+  }),
+  registerApiRoute('/kakomon/admin/exams/:examId/title', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z.object({ title: z.string().trim().min(1).max(200) }).safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: '試験名を入力してください (200 文字まで)' }, 400)
+      const examId = c.req.param('examId')
+      // 実行中のジョブは読み込んだ時点の内容 (旧名称) で保存し直すので、その間は変更を受け付けない
+      if ((await findAnswerJob(examId)) ?? (await findRunningJob('edit', j => (j.input as { examId?: string }).examId === examId)))
+        return c.json({ error: 'この試験の正解推定・正解インポート・編集が実行中です。終わってから名称を変更してください' }, 409)
+      const rec = await renameExam(examId, body.data.title)
+      return rec ? c.json({ ok: true, title: rec.title }) : c.json({ error: 'exam not found' }, 404)
     },
   }),
   registerApiRoute('/kakomon/admin/exams/:examId/solve', {
