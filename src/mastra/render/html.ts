@@ -53,6 +53,8 @@ function nl2br(s: string): string {
 export interface RenderOptions {
   /** 正解・解説を含める (管理者用/解答編) */
   withAnswers?: boolean
+  /** タイトル・ヘッダに付ける区別用の接尾辞 (例: 「【解答・解説】」) */
+  titleSuffix?: string
 }
 
 export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): string {
@@ -75,13 +77,14 @@ export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): s
       return renderQuestion(q, L, opts, showPassage ? { text: passage!, title: shared?.title } : undefined)
     })
     .join('\n')
-  const header = L.headerText ?? [exam.title, exam.year ? `${exam.year}年度` : '', exam.session ?? ''].filter(Boolean).join('　')
+  const suffix = opts.titleSuffix ?? ''
+  const header = (L.headerText ?? [exam.title, exam.year ? `${exam.year}年度` : '', exam.session ?? ''].filter(Boolean).join('　')) + suffix
 
   return `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>${escapeHtml(exam.title)}</title>
+<title>${escapeHtml(exam.title + suffix)}</title>
 <style>
   @page { size: ${pageSize}; margin: 18mm 16mm; }
   html, body { margin: 0; padding: 0; }

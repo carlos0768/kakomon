@@ -42,3 +42,14 @@ describe('renderExamHtml', () => {
     expect(formatQuestionNumber(7, '第{n}問')).toBe('第7問')
   })
 })
+
+describe('renderExamHtml titleSuffix', () => {
+  it('marks questions and answers files differently', () => {
+    const q = renderExamHtml(makeExam(), { titleSuffix: '【問題】' })
+    const a = renderExamHtml(makeExam(), { withAnswers: true, titleSuffix: '【解答・解説】' })
+    expect(q).toContain('【問題】')
+    expect(q).not.toContain('正解:')
+    expect(a).toContain('【解答・解説】')
+    expect(a).toContain('正解:')
+  })
+})
