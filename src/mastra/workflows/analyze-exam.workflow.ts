@@ -4,6 +4,7 @@ import { anthropicOptions } from '../config.ts'
 import { listExams, saveSpec } from '../db/repo.ts'
 import { examSpecSchema } from '../schemas/spec.ts'
 import { setExamScope } from '../services/exam-scope.ts'
+import { describeSections, observeSections, reconcileSpecSections, type ObservedStructure } from '../services/exam-structure.ts'
 import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
 import { streamObject } from '../services/llm.ts'
 
@@ -43,6 +44,14 @@ const analyzeStep = createStep({
     const list = targets
       .map(e => `- examId=${e.id} / ${e.title} / ${e.year ?? '年度不明'} ${e.session ?? ''} / ${e.exam.questions.length}問`)
       .join('\n')
+    // 大問構成は数えれば分かる事実なので、実測値を渡し、出力後もコードで補正する
+    const observed: ObservedStructure[] = targets.flatMap(e => {
+      const sections = observeSections(e.exam)
+      return sections ? [{ examId: e.id, year: e.year, sections }] : []
+    })
+    const structure = observed.length
+      ? `\n過去問の大問構成 (設問データから数えた実測値。format.sections はこれに合わせる):\n${observed.map(o => `- examId=${o.examId}: ${describeSections(o.sections)}`).join('\n')}\n`
+      : '\n過去問の設問データに大問の情報がありません。大問の区切りがあるかは get-past-exam の passages の見出しや設問番号から判断し、なければ format.sections は空にしてください。\n'
     const raw = await streamObject(
       agent,
       `次の過去問を分析し、出題要件定義を作成してください。
@@ -50,7 +59,7 @@ const analyzeStep = createStep({
 ${list}
 ${inputData.title ? `\n試験名: ${inputData.title}` : ''}
 ${inputData.focus ? `\n管理者からの指示: ${inputData.focus}` : ''}
-
+${structure}
 上記以外の過去問は対象外です (ツールにも出てきません)。sourceExamIds には上記の examId をすべて入れてください。`,
       {
         requestContext,
@@ -66,6 +75,8 @@ ${inputData.focus ? `\n管理者からの指示: ${inputData.focus}` : ''}
     const spec = examSpecSchema.parse(raw)
     if (inputData.title) spec.title = inputData.title
     spec.sourceExamIds = targets.map(e => e.id)
+    const corrections = reconcileSpecSections(spec, observed)
+    if (corrections.length) spec.summary = `${spec.summary}\n\n(自動補正) ${corrections.join(' / ')}`
     return { input: inputData, spec }
   },
 })

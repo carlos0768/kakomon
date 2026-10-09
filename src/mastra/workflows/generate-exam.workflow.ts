@@ -4,9 +4,22 @@ import { z } from 'zod'
 import { anthropicOptions, config } from '../config.ts'
 import { getExam, getSpec, listExams, saveExam, updateExamStatus } from '../db/repo.ts'
 import { renderExamFiles } from '../render/pdf.ts'
-import { extractedExamSchema, layoutProfileSchema, passageSchema, questionSchema, type ExtractedExam } from '../schemas/exam.ts'
-import { reviewResultSchema } from '../schemas/spec.ts'
-import { applyRevision, batchSizeFromEnv, mergeBatch, planBatches, type GeneratedParts } from '../services/generation-plan.ts'
+import { extractedExamSchema, layoutProfileSchema, passageSchema, questionSchema, sectionSchema, type ExtractedExam, type Question } from '../schemas/exam.ts'
+import { reviewResultSchema, type ReviewResult } from '../schemas/spec.ts'
+import { describeSections } from '../services/exam-structure.ts'
+import {
+  applyRevision,
+  batchSizeFromEnv,
+  checkSectionStructure,
+  mergeBatch,
+  orderBySections,
+  planBatches,
+  planSectionBatches,
+  sortIntoSections,
+  type BatchPlan,
+  type GeneratedParts,
+  type SectionSlot,
+} from '../services/generation-plan.ts'
 import { setExamScope } from '../services/exam-scope.ts'
 import { jobIdFrom, progressReporter, rethrowIfCancelled } from '../services/job-progress.ts'
 import { streamObject } from '../services/llm.ts'
@@ -14,7 +27,8 @@ import { specToMarkdown } from '../services/spec-markdown.ts'
 
 /**
  * 予想問題の生成:
- *   generate (作問 LLM, 過去問ツール付き。分野配分を保ってバッチ生成) → review (校閲 LLM) → 必要なら改訂 (指摘分だけ再出力)
+ *   generate (作問 LLM, 過去問ツール付き。大問構成があれば大問単位、なければ分野配分を保ってバッチ生成)
+ *   → 大問構成の検査 (コード) + review (校閲 LLM) → 必要なら改訂 (指摘分だけ再出力)
  *   → 下書き保存 → 管理者承認 (suspend) → レンダリング (HTML/PDF) → 公開
  */
 
@@ -48,6 +62,7 @@ const generatedExamSchema = z.object({
   instructions: z.array(z.string()).default([]),
   timeLimitMinutes: z.number().int().optional(),
   passages: z.array(passageSchema).default([]),
+  sections: z.array(sectionSchema).default([]),
   questions: z.array(questionSchema).min(1),
   designNotes: z.string(),
   /** 生成時に気づいた点 (バッチの過不足など) */
@@ -83,8 +98,20 @@ const generateStep = createStep({
     const scope = [...new Set([...spec.spec.sourceExamIds, ...(reference ? [reference.id] : []), ...(await listExams({ kind: 'predicted' })).filter(e => e.specId === inputData.specId).map(e => e.id)])]
     if (requestContext && scope.length) setExamScope(requestContext, scope)
     const layout = reference?.exam.layout ?? layoutProfileSchema.parse({})
-    const count = inputData.questionCount ?? spec.spec.format.questionCount
-    const plans = planBatches(count, spec.spec.domains, batchSizeFromEnv())
+    const notes: string[] = []
+
+    // 大問構成があれば大問単位で計画する (大問の数・小問数を守らせるため)。
+    // 管理者が構成と合わない設問数を指定した場合だけ、その指定を優先して従来の分野配分で作る
+    const specSections = spec.spec.format.sections
+    const sectionTotal = specSections.reduce((n, sec) => n + sec.questionCount, 0)
+    const useSections = specSections.length > 0 && (inputData.questionCount === undefined || inputData.questionCount === sectionTotal)
+    if (specSections.length && !useSections) {
+      notes.push(`設問数の指定 (${inputData.questionCount} 問) が大問構成の合計 (${sectionTotal} 問) と異なるため、大問構成を使わずに作問`)
+    }
+    const sections = useSections ? specSections : []
+    const count = useSections ? sectionTotal : (inputData.questionCount ?? spec.spec.format.questionCount)
+    const plans = useSections ? planSectionBatches(sections, batchSizeFromEnv()) : planBatches(count, spec.spec.domains, batchSizeFromEnv())
+    const examSections = sections.map(sec => ({ number: sec.number, title: sec.title, instruction: sec.instruction }))
 
     const generator = mastra.getAgentById('exam-generator')
     const reviewer = mastra.getAgentById('exam-reviewer')
@@ -94,13 +121,12 @@ const generateStep = createStep({
 - 全体の設問数: ${count} 問、選択肢数: ${spec.spec.format.choicesPerQuestion}
 - 参照する過去問: ${reference ? `examId=${reference.id} (${reference.title} ${reference.year ?? ''})` : 'なし'} を get-past-exam で読み、文体・選択肢の長さ・誤答の作り方を揃える。list-past-exams で見つかる他の回も参照してよい
 - 選択肢ラベルは参照過去問と同じ表記 (例: ${reference?.exam.questions[0]?.choices.map(c => c.label).join(' ') ?? '1 2 3 4'})
-${inputData.instructions ? `- 管理者からの指示: ${inputData.instructions}\n` : ''}
+${sections.length ? `- 大問構成 (厳守): ${describeSections(sections)}。大問の数と各大問の小問数を変えない。各設問の section に所属する大問の番号を入れる\n` : ''}${inputData.instructions ? `- 管理者からの指示: ${inputData.instructions}\n` : ''}
 <要件定義 specId=${inputData.specId}>
 ${specToMarkdown(spec.spec, inputData.specId)}
 </要件定義>`
 
     const acc: GeneratedParts = { passages: [], questions: [], designNotes: [] }
-    const notes: string[] = []
     const examId = randomUUID()
 
     // バッチが 1 つ終わるごとに下書きを DB に保存する。後続 (校閲・改訂) で失敗しても生成済みの設問は残る
@@ -118,6 +144,7 @@ ${specToMarkdown(spec.spec, inputData.specId)}
           timeLimitMinutes: spec.spec.format.timeLimitMinutes ?? reference?.exam.timeLimitMinutes,
           instructions: reference?.exam.instructions ?? [],
           passages: acc.passages,
+          sections: examSections,
           questions: acc.questions,
           layout,
           extractionNotes: [`generated from spec ${inputData.specId}`, ...extraNotes, ...notes, acc.designNotes.join('\n')].filter(Boolean),
@@ -129,29 +156,19 @@ ${specToMarkdown(spec.spec, inputData.specId)}
     // 生成・校閲はツールを持ちスキーマも大きいので、ネイティブ構造化出力 ("compiled grammar is too large") ではなく
     // スキーマをプロンプトに注入する (jsonPromptInjection: true)
     for (const plan of plans) {
-      await progress.setPhase(`作問中 (${plan.index}/${plans.length} バッチ目: 問${plan.start}〜${plan.end})`)
-      const done = acc.questions.map(q => ({ number: q.number, domain: q.domain, topic: q.topic, stem: q.stem.slice(0, 60) }))
-      const raw = await streamObject(
-        generator,
-        `${basePrompt}
-
-この呼び出しでは 問${plan.start}〜問${plan.end} の ${plan.end - plan.start + 1} 問だけを作成してください (全 ${plans.length} バッチ中 ${plan.index} 番目)。
-- この範囲の分野配分: ${plan.quota.map(q => `${q.domain} ${q.count} 問`).join('、')}
-- number は ${plan.start} から連番
+      const start = acc.questions.length + 1
+      const size = plan.end - plan.start + 1
+      await progress.setPhase(`作問中 (${plan.index}/${plans.length} バッチ目: 問${start}〜${start + size - 1})`)
+      const done = acc.questions.map(q => ({ number: q.number, section: q.section, domain: q.domain, topic: q.topic, stem: q.stem.slice(0, 60) }))
+      const batch = generatedBatchSchema.parse(
+        await generate(`この呼び出しでは 問${start}〜問${start + size - 1} の ${size} 問だけを作成してください (全 ${plans.length} バッチ中 ${plan.index} 番目)。
+${plan.sections ? sectionAssignment(plan.sections, start) : `- この範囲の分野配分: ${plan.quota.map(q => `${q.domain} ${q.count} 問`).join('、')}\n- number は ${start} から連番`}
 - 長文読解の本文など複数の設問で共有する資料文は passages に 1 回だけ書き、id は "P${plan.index}-1" のようにこのバッチ固有の接頭辞を付け、設問は passageId で参照する。設問ごとに同じ本文を繰り返さない
 - title / instructions は不要。passages / questions / designNotes だけを JSON で出力
-${done.length ? `- すでに作成済みの設問 (題材・問い方の重複を避ける):\n${JSON.stringify(done)}` : ''}`,
-        {
-          requestContext,
-          structuredOutput: { schema: generatedBatchSchema, jsonPromptInjection: true },
-          maxSteps: 60,
-          // 思考トークンも上限に含まれる (15 問の出力 ~1.5 万 + 思考)
-          modelSettings: { maxOutputTokens: 64000 },
-          providerOptions: anthropicOptions(config.generateEffort),
-        },
-        { progress },
+${done.length ? `- すでに作成済みの設問 (題材・問い方の重複を避ける):\n${JSON.stringify(done)}` : ''}`),
       )
-      notes.push(...mergeBatch(acc, generatedBatchSchema.parse(raw), plan))
+      if (plan.sections) batch.questions = await fitToSections(plan, batch)
+      notes.push(...mergeBatch(acc, batch, plan))
       await persistDraft('draft', [`生成中 (${plan.index}/${plans.length} バッチ完了)`])
     }
     if (!acc.questions.length) throw new Error('作問結果が空でした')
@@ -159,7 +176,8 @@ ${done.length ? `- すでに作成済みの設問 (題材・問い方の重複�
     // 校閲と改訂は「失敗しても下書きを捨てない」。失敗は注意書きとして残し、管理者の確認に回す
     let revisions = 0
     let review = await runReviewSafely()
-    while (!review.approved && revisions < inputData.maxRevisions) {
+    // 改訂は設問の差し替えなので、設問番号の付いた指摘がなければ回さない (大問の構成違反だけなら管理者確認へ)
+    while (!review.approved && revisions < inputData.maxRevisions && review.issues.some(i => i.questionNumber !== undefined)) {
       revisions++
       await progress.setPhase(`校閲の指摘を反映して改訂中 (${revisions} 回目)`)
       const flagged = new Set(review.issues.map(i => i.questionNumber).filter((n): n is number => typeof n === 'number'))
@@ -210,25 +228,105 @@ ${JSON.stringify(acc.questions.filter(q => !flagged.has(q.number)).map(q => ({ n
       instructions: reference?.exam.instructions ?? [],
       timeLimitMinutes: spec.spec.format.timeLimitMinutes ?? reference?.exam.timeLimitMinutes,
       passages: acc.passages,
+      sections: examSections,
       questions: acc.questions,
       designNotes: acc.designNotes.join('\n'),
       notes,
     })
     return { input: inputData, examId, generated, review, revisions, layout, referenceExamId: reference?.id }
 
-    async function runReviewSafely() {
+    /** 作問 LLM を 1 回呼ぶ (バッチ作成・追加作問で共通) */
+    async function generate(task: string) {
+      return await streamObject(generator, `${basePrompt}\n\n${task}`, {
+        requestContext,
+        structuredOutput: { schema: generatedBatchSchema, jsonPromptInjection: true },
+        maxSteps: 60,
+        // 思考トークンも上限に含まれる (15 問の出力 ~1.5 万 + 思考)
+        modelSettings: { maxOutputTokens: 64000 },
+        providerOptions: anthropicOptions(config.generateEffort),
+      }, { progress })
+    }
+
+    /** バッチが受け持つ大問と小問数の割り当て (作問 LLM への指示) */
+    function sectionAssignment(slots: SectionSlot[], start: number) {
+      // 前のバッチから続く大問は、その大問ですでに作った資料文を渡して同じ passageId で参照させる
+      const continued = new Set(slots.filter(sl => sl.from > 1).map(sl => sl.section))
+      const ids = new Set(acc.questions.filter(q => q.section !== undefined && continued.has(q.section)).map(q => q.passageId))
+      const shared = acc.passages.filter(p => ids.has(p.id))
+      return `- この範囲の大問と小問数 (厳守。この数だけ作り、大問の順に並べる):
+${slots
+  .map(sl => {
+    const range = sl.count === sl.total ? `小問 ${sl.count} 問` : `小問 ${sl.from}〜${sl.from + sl.count - 1} 問目 (全 ${sl.total} 問のうち ${sl.count} 問)`
+    const extra = [
+      sl.instruction ? `指示文「${sl.instruction}」` : '',
+      sl.domains.length ? `分野: ${sl.domains.join('・')}` : '',
+      sl.sharedPassage ? '小問はすべて 1 つの共通の資料文を参照する' : '',
+      sl.notes ?? '',
+    ].filter(Boolean)
+    return `  - section=${sl.section} (${sl.title || `第${sl.section}問`}): ${range}${extra.length ? ` / ${extra.join(' / ')}` : ''}`
+  })
+  .join('\n')}
+- 各設問の section に上の大問番号を入れる。number は ${start} から大問の順に連番
+${shared.length ? `- 前のバッチから続く大問の資料文 (同じ id を passageId で参照し、passages には再掲しない):\n${JSON.stringify(shared)}` : ''}`
+    }
+
+    /**
+     * 作問結果を大問ごとの枠に振り分け、足りない大問があれば 1 回だけ追加作問して埋める。
+     * それでも足りなければメモに残す (大問構成の検査で管理者に示される)。
+     */
+    async function fitToSections(plan: BatchPlan, batch: z.infer<typeof generatedBatchSchema>): Promise<Question[]> {
+      const slots = plan.sections!
+      const fit = sortIntoSections(batch.questions, slots)
+      if (fit.dropped) notes.push(`バッチ ${plan.index}: 大問の小問数を超えた ${fit.dropped} 問を切り捨て`)
+      if (fit.missing.length) {
+        const lacking = fit.missing.map(m => `${m.slot.title || `第${m.slot.section}問`} があと ${m.count} 問`).join('、')
+        await progress.setPhase(`作問中 (${plan.index}/${plans.length} バッチ目: 不足した小問を追加作成)`)
+        try {
+          const made = [...fit.picked.values()].flat().map(q => ({ section: q.section, topic: q.topic, stem: q.stem.slice(0, 60) }))
+          const extra = generatedBatchSchema.parse(
+            await generate(`大問の小問数が足りません (${lacking})。不足分の小問だけを作成してください。
+${fit.missing.map(m => `- section=${m.slot.section} (${m.slot.title || `第${m.slot.section}問`}): ${m.count} 問${m.slot.domains.length ? ` / 分野: ${m.slot.domains.join('・')}` : ''}`).join('\n')}
+- 各設問の section に上の大問番号を入れる (number は仮でよい。結合時に振り直す)
+- この大問ですでに作成した小問と、使っている資料文 (同じ資料文を使う場合は同じ id を passageId で参照し、passages には再掲しない):
+${JSON.stringify({ passages: batch.passages, questions: made })}
+- 新しい資料文が必要なら id は "P${plan.index}-T1" のように付ける
+- passages / questions / designNotes だけを JSON で出力`),
+          )
+          sortIntoSections(extra.questions, slots, fit.picked)
+          batch.passages.push(...extra.passages.filter(p => !batch.passages.some(x => x.id === p.id)))
+        } catch (err) {
+          notes.push(`バッチ ${plan.index}: 不足した小問の追加作成に失敗: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        const still = slots
+          .map(sl => ({ sl, n: sl.count - (fit.picked.get(sl.section)?.length ?? 0) }))
+          .filter(x => x.n > 0)
+        if (still.length) notes.push(`バッチ ${plan.index}: 小問が不足したまま (${still.map(x => `${x.sl.title || `第${x.sl.section}問`} ${x.n} 問`).join('、')})`)
+      }
+      return orderBySections(fit.picked, slots)
+    }
+
+    async function runReviewSafely(): Promise<ReviewResult> {
+      let review: ReviewResult
       try {
-        return await runReview()
+        review = await runReview()
       } catch (err) {
         rethrowIfCancelled(err)
         const message = `校閲に失敗したため未校閲のまま管理者確認に回します: ${err instanceof Error ? err.message : String(err)}`
         notes.push(message)
-        return reviewResultSchema.parse({
+        review = reviewResultSchema.parse({
           overallScore: 0,
           approved: false,
           issues: [{ severity: 'major', category: 'その他', message }],
           coverage: { domainCoverage: '未評価', difficultyCoverage: '未評価', patternCoverage: '未評価' },
         })
+      }
+      // 大問構成は LLM の校閲に任せず、数えて検査する。違反は出題不可 (blocker)
+      const problems = checkSectionStructure(acc.questions, sections)
+      if (!problems.length) return review
+      return {
+        ...review,
+        approved: false,
+        issues: [...problems.map(message => ({ severity: 'blocker' as const, category: '要件逸脱' as const, message: `大問構成: ${message}` })), ...review.issues],
       }
     }
 
@@ -239,7 +337,7 @@ ${JSON.stringify(acc.questions.filter(q => !flagged.has(q.number)).map(q => ({ n
         `次の予想問題を要件定義 specId=${inputData.specId} と過去問に照らして検査してください。
 
 予想問題 (JSON):
-${JSON.stringify({ title: inputData.title, passages: acc.passages, questions: acc.questions })}`,
+${JSON.stringify({ title: inputData.title, passages: acc.passages, sections: examSections, questions: acc.questions })}`,
         {
           requestContext,
           structuredOutput: { schema: reviewResultSchema, jsonPromptInjection: true },
@@ -273,6 +371,7 @@ const saveDraftStep = createStep({
       timeLimitMinutes: inputData.generated.timeLimitMinutes,
       instructions: inputData.generated.instructions,
       passages: inputData.generated.passages,
+      sections: inputData.generated.sections,
       questions: inputData.generated.questions,
       layout: inputData.layout,
       extractionNotes: [`generated from spec ${inputData.input.specId}`, ...inputData.generated.notes, inputData.generated.designNotes].filter(Boolean),

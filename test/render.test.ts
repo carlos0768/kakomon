@@ -34,6 +34,18 @@ describe('renderExamHtml', () => {
     expect(html).toContain('問3 だけの短い資料')
   })
 
+  it('prints each section heading and instruction once before its first question', () => {
+    const exam = makeExam({ sections: [{ number: 1, title: '第1問', instruction: '次の各問いに答えよ。' }, { number: 2, title: '第2問' }] })
+    exam.questions[0]!.section = 1
+    exam.questions[1]!.section = 1
+    exam.questions[2]!.section = 2
+    const html = renderExamHtml(exam)
+    expect(html.split('class="section-head"').length - 1).toBe(2)
+    expect(html.indexOf('次の各問いに答えよ。')).toBeLessThan(html.indexOf('id="q1"'))
+    expect(html.indexOf('id="q2"')).toBeLessThan(html.indexOf('id="s2"'))
+    expect(html.indexOf('id="s2"')).toBeLessThan(html.indexOf('id="q3"'))
+  })
+
   it('formats labels per style', () => {
     expect(formatChoiceLabel('3', 'katakana')).toBe('ウ')
     expect(formatChoiceLabel('2', 'alpha-upper')).toBe('B')
