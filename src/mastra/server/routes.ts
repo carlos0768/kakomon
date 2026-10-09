@@ -23,7 +23,8 @@ import { MIN_ATTEMPTS_FOR_WEAKNESS } from '../services/weakness.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
 import { userUiHtml } from './ui.ts'
 import { adminUiHtml } from './admin-ui.ts'
-import { findRunningJob, getJob, listJobs, resumeGenerateJob, startSolveJob, startWorkflowJob } from '../services/jobs.ts'
+import { findRunningJob, getJob, listJobs, resumeGenerateJob, startEditJob, startSolveJob, startWorkflowJob } from '../services/jobs.ts'
+import { editBlockReason } from '../services/exam-edit.ts'
 import { PreflightError, preflightModel } from '../services/preflight.ts'
 import { listUsers, resetPassword } from '../services/auth.ts'
 import { getSpec } from '../db/repo.ts'
@@ -448,6 +449,27 @@ export const apiRoutes = [
       const pre = await preflightOr400(c)
       if (pre) return pre
       const job = await startSolveJob(c.get('mastra'), rec.id, `正解推定: ${rec.title}`)
+      return c.json({ job })
+    },
+  }),
+
+  // ---- 予想問題をプロンプトで編集 (公開前のみ) ----
+  registerApiRoute('/kakomon/admin/exams/:examId/edit', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z.object({ prompt: z.string().trim().min(1) }).safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: '編集の指示を入力してください' }, 400)
+      const rec = await getExam(c.req.param('examId'))
+      const blocked = editBlockReason(rec)
+      if (blocked || !rec) return c.json({ error: blocked }, rec ? 400 : 404)
+      // 同じ予想問題への編集が重なると、後から終わった方が先の編集を上書きしてしまう
+      if (await findRunningJob('edit', j => (j.input as { examId?: string }).examId === rec.id)) return c.json({ error: 'この予想問題の編集はすでに実行中です。終わるまで待ってください' }, 409)
+      // 作問中の下書きは、作問ジョブがバッチごとに上書き保存するので編集を受け付けない
+      if (rec.status === 'draft' && (await findRunningJob('generate'))) return c.json({ error: '作問ジョブが実行中です。作問が終わって承認待ちになってから編集してください' }, 409)
+      const pre = await preflightOr400(c)
+      if (pre) return pre
+      const job = await startEditJob(c.get('mastra'), rec.id, body.data.prompt, `編集: ${rec.title}`)
       return c.json({ job })
     },
   }),
