@@ -5,7 +5,7 @@ import { config } from '../config.ts'
 import { ensureSchema, getDb } from '../db/client.ts'
 import { createAttempt, getAttempt, getExam, getWeaknessReport, listAttempts, listExams, listSpecs, updateExamStatus } from '../db/repo.ts'
 import { answerSchema } from '../schemas/grading.ts'
-import { toPublicQuestion } from '../schemas/exam.ts'
+import { toPublicQuestion, type ExtractedExam } from '../schemas/exam.ts'
 import {
   AuthError,
   authenticate,
@@ -23,7 +23,8 @@ import { MIN_ATTEMPTS_FOR_WEAKNESS } from '../services/weakness.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
 import { userUiHtml } from './ui.ts'
 import { adminUiHtml } from './admin-ui.ts'
-import { cancelJob, findRunningJob, getJob, JobStateError, listJobs, resumeGenerateJob, startAnswerKeyJob, startSolveJob, startWorkflowJob, withStartLock } from '../services/jobs.ts'
+import { cancelJob, findRunningJob, getJob, JobStateError, listJobs, resumeGenerateJob, startAnswerKeyJob, startEditJob, startSolveJob, startWorkflowJob, withStartLock } from '../services/jobs.ts'
+import { editBlockReason } from '../services/exam-edit.ts'
 import { PreflightError, preflightModel } from '../services/preflight.ts'
 import { listUsers, resetPassword } from '../services/auth.ts'
 import { getSpec } from '../db/repo.ts'
@@ -104,6 +105,17 @@ const credentialsSchema = z.object({ username: z.string().min(1), password: z.st
 
 function publicUser(u: User) {
   return { userId: u.id, username: u.username }
+}
+
+/** 問題/解答を別ファイルの HTML としてダウンロードさせるレスポンス (印刷→PDF 保存もできる) */
+function downloadHtml(c: { header(k: string, v: string): void; body(b: string): Response }, exam: ExtractedExam, examId: string, kind: 'questions' | 'answers') {
+  const answers = kind === 'answers'
+  const html = renderExamHtml(exam, { withAnswers: answers, titleSuffix: answers ? '【解答・解説】' : '【問題】' })
+  const label = answers ? '解答' : '問題'
+  const name = `${exam.title}_${label}.html`
+  c.header('Content-Type', 'text/html; charset=utf-8')
+  c.header('Content-Disposition', `attachment; filename="${examId}-${kind}.html"; filename*=UTF-8''${encodeURIComponent(name)}`)
+  return c.body(html)
 }
 
 export const apiRoutes = [
@@ -253,6 +265,17 @@ export const apiRoutes = [
       if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
       const { renderExamHtml } = await import('../render/html.ts')
       return c.html(renderExamHtml(rec.exam))
+    },
+  }),
+
+  // ---- 問題のダウンロード (正解は含まない。解答は管理者のみ) ----
+  registerApiRoute('/kakomon/exams/:examId/download', {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
+      return downloadHtml(c, rec.exam, rec.id, 'questions')
     },
   }),
 
@@ -414,6 +437,16 @@ export const apiRoutes = [
       return c.html(renderExamHtml(rec.exam, { withAnswers: c.req.query('answers') !== '0' }))
     },
   }),
+  // 問題 (kind=questions) と解答・解説 (kind=answers) を別ファイルでダウンロード
+  registerApiRoute('/kakomon/admin/exams/:examId/download', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec) return c.text('not found', 404)
+      return downloadHtml(c, rec.exam, rec.id, c.req.query('kind') === 'answers' ? 'answers' : 'questions')
+    },
+  }),
   registerApiRoute('/kakomon/admin/exams/:examId/status', {
     method: 'POST',
     middleware: [adminAuth],
@@ -457,6 +490,30 @@ export const apiRoutes = [
         if (pre) return pre
         const filePath = await saveUpload(file, 'answers')
         const job = await startAnswerKeyJob(c.get('mastra'), rec.id, filePath, `正解インポート: ${rec.title}${rec.exam.year ? ` (${rec.exam.year})` : ''}`)
+        return c.json({ job })
+      })
+      return res ?? c.json({ error: STARTING }, 409)
+    },
+  }),
+
+  // ---- 予想問題をプロンプトで編集 (公開前のみ) ----
+  registerApiRoute('/kakomon/admin/exams/:examId/edit', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z.object({ prompt: z.string().trim().min(1) }).safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: '編集の指示を入力してください' }, 400)
+      const rec = await getExam(c.req.param('examId'))
+      const blocked = editBlockReason(rec)
+      if (blocked || !rec) return c.json({ error: blocked }, rec ? 400 : 404)
+      const res = await withStartLock([`edit:${rec.id}`], async () => {
+        // 同じ予想問題への編集が重なると、後から終わった方が先の編集を上書きしてしまう
+        if (await findRunningJob('edit', j => (j.input as { examId?: string }).examId === rec.id)) return c.json({ error: 'この予想問題の編集はすでに実行中です。終わるまで待ってください' }, 409)
+        // 作問中の下書きは、作問ジョブがバッチごとに上書き保存するので編集を受け付けない
+        if (rec.status === 'draft' && (await findRunningJob('generate'))) return c.json({ error: '作問ジョブが実行中です。作問が終わって承認待ちになってから編集してください' }, 409)
+        const pre = await preflightOr400(c)
+        if (pre) return pre
+        const job = await startEditJob(c.get('mastra'), rec.id, body.data.prompt, `編集: ${rec.title}`)
         return c.json({ job })
       })
       return res ?? c.json({ error: STARTING }, 409)

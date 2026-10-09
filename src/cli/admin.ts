@@ -6,6 +6,7 @@
  *   npm run admin -- solve   <examId>                  正解が無い過去問に AI 推定の正解と根拠を付ける
  *   npm run admin -- analyze [--exam-ids a,b] [--title T] [--focus "..."] [--spec-id ID]
  *   npm run admin -- generate --spec <specId> --title "..." [--ref <examId>] [--count N] [--instructions "..."] [--max-revisions N]
+ *   npm run admin -- edit    <examId> --prompt "..."     承認前の予想問題をプロンプトで編集する
  *   npm run admin -- approve <runId> [--reject] [--note "..."]
  *   npm run admin -- render  <examId> [--answers]        HTML/PDF を再生成
  *   npm run admin -- list    [exams|specs|users]
@@ -22,6 +23,7 @@ import { adminApprovalStep } from '../mastra/workflows/generate-exam.workflow.ts
 import { specToMarkdown } from '../mastra/services/spec-markdown.ts'
 import { listUsers, registerUser, resetPassword } from '../mastra/services/auth.ts'
 import { streamObject } from '../mastra/services/llm.ts'
+import { editExamWithPrompt } from '../mastra/services/exam-edit.ts'
 import { z } from 'zod'
 
 const [, , command, ...rest] = process.argv
@@ -155,6 +157,14 @@ async function main() {
       }
       break
     }
+    case 'edit': {
+      const examId = positional[0]
+      const prompt = str('prompt')
+      if (!examId || !prompt) throw new Error('usage: edit <examId> --prompt "..."')
+      console.log(JSON.stringify(await editExamWithPrompt(mastra, examId, prompt), null, 2))
+      console.error(`\n解答付きプレビュー: data/out/${examId}-answers.html`)
+      break
+    }
     case 'approve': {
       const runId = positional[0]
       if (!runId) throw new Error('usage: approve <runId> [--reject] [--note "..."]')
@@ -215,7 +225,7 @@ async function main() {
 }
 
 function usage() {
-  return `commands: ingest | solve | analyze | generate | approve | render | list | export-spec | user`
+  return `commands: ingest | solve | analyze | generate | edit | approve | render | list | export-spec | user`
 }
 
 main().catch(err => {

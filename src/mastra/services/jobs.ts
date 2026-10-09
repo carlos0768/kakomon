@@ -9,16 +9,17 @@ import { ensureSchema, getDb, type Row } from '../db/client.ts'
 import { getExam, saveExam } from '../db/repo.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
 import { abortJob, JOB_ID_KEY, JobCancelledError, progressReporter, registerJobAbort, releaseJobAbort, type JobProgress } from './job-progress.ts'
+import { editExamWithPrompt } from './exam-edit.ts'
 import { streamObject } from './llm.ts'
 
 /**
  * 管理画面から起動する非同期ジョブ。
- * ワークフロー (ingest / analyze / generate) や正解推定 (solve) をバックグラウンドで実行し、
+ * ワークフロー (ingest / analyze / generate) や正解推定 (solve)、プロンプト編集 (edit) をバックグラウンドで実行し、
  * 進行状況と結果を jobs テーブルに残す。承認待ち (suspended) のジョブは resume できる。
  * 実行中のジョブは cancelJob で停止できる (status = cancelled)。
  */
 
-export type JobKind = 'ingest' | 'analyze' | 'generate' | 'solve' | 'answers'
+export type JobKind = 'ingest' | 'analyze' | 'generate' | 'solve' | 'answers' | 'edit'
 export type JobStatus = 'running' | 'suspended' | 'success' | 'failed' | 'rejected' | 'cancelled'
 
 export interface Job {
@@ -37,7 +38,7 @@ export interface Job {
   updatedAt: string
 }
 
-const WORKFLOW_BY_KIND: Record<Exclude<JobKind, 'solve' | 'answers'>, 'ingestExamWorkflow' | 'analyzeExamWorkflow' | 'generateExamWorkflow'> = {
+const WORKFLOW_BY_KIND: Record<Exclude<JobKind, 'solve' | 'answers' | 'edit'>, 'ingestExamWorkflow' | 'analyzeExamWorkflow' | 'generateExamWorkflow'> = {
   ingest: 'ingestExamWorkflow',
   analyze: 'analyzeExamWorkflow',
   generate: 'generateExamWorkflow',
@@ -227,7 +228,7 @@ async function recordWorkflowResult(jobId: string, res: { status: string; result
 }
 
 /** ワークフローをバックグラウンドで開始し、ジョブ ID を返す */
-export async function startWorkflowJob(mastra: Mastra, kind: Exclude<JobKind, 'solve' | 'answers'>, title: string, input: unknown): Promise<Job> {
+export async function startWorkflowJob(mastra: Mastra, kind: Exclude<JobKind, 'solve' | 'answers' | 'edit'>, title: string, input: unknown): Promise<Job> {
   const workflow = mastra.getWorkflow(WORKFLOW_BY_KIND[kind])
   const run = await workflow.createRun()
   const id = randomUUID()
@@ -433,6 +434,18 @@ export async function startAnswerKeyJob(mastra: Mastra, examId: string, filePath
   await insertJob({ id, kind: 'answers', title, input: { examId, filePath } })
   registerJobAbort(id)
   void importAnswerKey(mastra, examId, filePath, id)
+    .then(result => finishJob(id, { status: 'success', result }))
+    .catch(err => failJob(id, err))
+    .finally(() => settle(id))
+  return (await getJob(id))!
+}
+
+/** 予想問題をプロンプトで編集するジョブ (承認待ちの間も実行できる。承認時は編集後の内容が公開される) */
+export async function startEditJob(mastra: Mastra, examId: string, prompt: string, title: string): Promise<Job> {
+  const id = randomUUID()
+  await insertJob({ id, kind: 'edit', title, input: { examId, prompt } })
+  registerJobAbort(id)
+  void editExamWithPrompt(mastra, examId, prompt, id)
     .then(result => finishJob(id, { status: 'success', result }))
     .catch(err => failJob(id, err))
     .finally(() => settle(id))

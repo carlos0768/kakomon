@@ -101,6 +101,14 @@ export function adminUiHtml(): string {
       <div class="err" id="generateErr"></div>
       <h3>承認待ち・予想問題</h3>
       <div id="draftList"></div>
+      <div class="card" id="editBox">
+        <h3 style="margin-top:0">プロンプトで編集する</h3>
+        <div class="row"><select id="editExam" style="min-width:320px"></select></div>
+        <label>編集の指示</label>
+        <textarea id="editPrompt" placeholder="例: 問3 の正解が曖昧なので、正解が 1 つに定まるように選択肢を直して / 問12 を削除して / 計算問題を 2 問追加して / 全体の文体を「である」調に揃えて"></textarea>
+        <div class="row" style="margin-top:8px"><button id="editBtn" data-act="edit">編集を実行</button><span class="muted">指示に関係する設問だけを書き換えます (数分)。承認待ちのまま編集でき、承認すると編集後の内容が公開されます。公開中のものは非公開にしてから編集してください。</span></div>
+        <div class="err" id="editErr"></div>
+      </div>
     </section>
 
     <section class="card" id="jobs">
@@ -162,9 +170,9 @@ async function init() {
     if (me.serverless) {
       // Vercel 上では応答直後に関数が止まるため、重いジョブは始められない (承認・公開切替・ユーザー管理のみ)
       const note = 'Vercel 上では実行できません。手元で npm run dev を起動した管理画面 (http://localhost:4111/kakomon/admin) から実行してください';
-      for (const id of ['#uploadBtn', '#analyzeBtn', '#generateBtn']) { const b = $(id); b.dataset.heavy = '1'; b.disabled = true; b.title = note; }
+      for (const id of ['#uploadBtn', '#analyzeBtn', '#generateBtn', '#editBtn']) { const b = $(id); b.dataset.heavy = '1'; b.disabled = true; b.title = note; }
       $('#uploadHint').textContent = note + '。ここでは承認・公開切替・ユーザー管理ができます。';
-      $('#analyzeErr').textContent = note; $('#generateErr').textContent = note;
+      $('#analyzeErr').textContent = note; $('#generateErr').textContent = note; $('#editErr').textContent = note;
     }
     await refreshAll(); startPolling();
   } catch (e) {
@@ -290,16 +298,42 @@ function renderDrafts() {
   if (pending.length) html += '<h3>承認待ち</h3>' + pending.map(j => { const s = j.suspend || {}; return '<div class="card"><strong>' + esc(s.title || j.title) + '</strong> ' + tag('suspended')
     + '<div class="muted">' + s.questionCount + ' 問 / 校閲スコア ' + s.reviewScore + ' / blocker ' + s.blockerCount + ' 件 / 校閲判定: ' + (s.reviewApproved ? '合格' : '要確認') + '</div>'
     + '<div class="row" style="margin-top:6px"><button class="secondary" onclick="previewExam(\\'' + s.examId + '\\')">内容を確認 (正解つき)</button>'
+    + '<button class="secondary" onclick="startEdit(\\'' + s.examId + '\\')">プロンプトで編集</button>'
     + '<button data-act="decide:' + j.id + '" onclick="decide(\\'' + j.id + '\\', true)">承認して公開</button><button class="danger" data-act="decide:' + j.id + '" onclick="decide(\\'' + j.id + '\\', false)">却下</button></div></div>'; }).join('');
   html += '<h3>予想問題</h3>' + (predicted.length ? '<table><tr><th>タイトル</th><th>設問</th><th>状態</th><th></th></tr>' + predicted.map(e =>
     '<tr><td>' + esc(e.title) + '</td><td>' + e.questionCount + '</td><td>' + tag(e.status) + '</td><td class="row">'
     + '<button class="secondary" onclick="previewExam(\\'' + e.examId + '\\')">確認</button>'
+    + (e.status !== 'published' ? '<button class="secondary" onclick="startEdit(\\'' + e.examId + '\\')">編集</button>' : '')
+    + '<button class="secondary" onclick="downloadExam(\\'' + e.examId + '\\',\\'questions\\')">問題DL</button>'
+    + '<button class="secondary" onclick="downloadExam(\\'' + e.examId + '\\',\\'answers\\')">解答DL</button>'
     + (e.status === 'published' ? '<a class="muted" href="/kakomon/exams/' + e.examId + '/print" target="_blank">受験者向け表示</a><button class="secondary" data-act="status:' + e.examId + '" onclick="setStatus(\\'' + e.examId + '\\',\\'archived\\')">非公開にする</button>'
       : (e.status === 'archived' || e.status === 'review') ? '<button data-act="status:' + e.examId + '" onclick="setStatus(\\'' + e.examId + '\\',\\'published\\')">公開する</button>' : '')
     + '</td></tr>').join('') + '</table>' : '<p class="muted">まだありません。</p>');
   $('#draftList').innerHTML = html;
+  // 編集できるのは公開前 (下書き・承認待ち・非公開) の予想問題
+  const editable = predicted.filter(e => e.status !== 'published');
+  const selected = $('#editExam').value;
+  $('#editExam').innerHTML = editable.length ? editable.map(e => '<option value="' + e.examId + '">' + esc(e.title) + ' (' + e.questionCount + '問 / ' + esc(e.status) + ')</option>').join('') : '<option value="">編集できる予想問題がありません</option>';
+  if (selected && editable.some(e => e.examId === selected)) $('#editExam').value = selected;
   syncBusy();
 }
+window.startEdit = examId => { $('#editExam').value = examId; $('#editBox').scrollIntoView({ behavior: 'smooth' }); $('#editPrompt').focus(); };
+$('#editBtn').onclick = () => act('edit', async () => {
+  $('#editErr').textContent = '';
+  const examId = $('#editExam').value, prompt = $('#editPrompt').value.trim();
+  if (!examId || !prompt) { $('#editErr').textContent = '予想問題と編集の指示を指定してください'; return; }
+  try { await api('/kakomon/admin/exams/' + examId + '/edit', { method: 'POST', body: JSON.stringify({ prompt }) }); $('#editPrompt').value = ''; await loadJobs(); location.hash = '#jobs'; }
+  catch (e) { $('#editErr').textContent = e.message; }
+});
+// 認証ヘッダが要るので fetch → Blob にしてダウンロードさせる
+window.downloadExam = async (id, kind) => {
+  try {
+    const r = await fetch('/kakomon/admin/exams/' + id + '/download?kind=' + kind, { headers: headers() });
+    if (!r.ok) throw new Error('ダウンロードに失敗しました (' + r.status + ')');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob()); a.download = id + '-' + kind + '.html';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) { alert(e.message); }
+};
 window.previewExam = async id => { const r = await fetch('/kakomon/admin/exams/' + id + '/preview', { headers: headers() }); const html = await r.text(); const w = window.open('', '_blank'); w.document.open(); w.document.write(html); w.document.close(); };
 window.decide = (jobId, approved) => {
   if (pending.has('decide:' + jobId)) return;
@@ -309,7 +343,7 @@ window.decide = (jobId, approved) => {
 window.setStatus = (examId, status) => act('status:' + examId, async () => { try { await api('/kakomon/admin/exams/' + examId + '/status', { method: 'POST', body: JSON.stringify({ status }) }); await loadExams(); renderDrafts(); } catch (e) { alert(e.message); } });
 
 // ---------- ジョブ ----------
-const KIND = { ingest: '取り込み', analyze: '傾向分析', generate: '作問', solve: '正解推定', answers: '正解インポート' };
+const KIND = { ingest: '取り込み', analyze: '傾向分析', generate: '作問', solve: '正解推定', answers: '正解インポート', edit: '編集' };
 async function loadJobs() {
   jobs = (await api('/kakomon/admin/jobs')).jobs;
   $('#jobList').innerHTML = jobs.length ? '<table><tr><th>開始</th><th>種類</th><th>内容</th><th>状態</th><th>結果</th><th></th></tr>' + jobs.slice(0, 30).map(j =>
@@ -350,6 +384,7 @@ function summarize(j) {
     + (r.changed?.length ? ' / 正解が変わった設問: ' + r.changed.map(c => '問' + c.number + ' ' + (c.from || '未設定') + '→' + c.to).join(', ') : '')
     + (r.missing?.length ? ' / PDF に無かった設問: 問' + r.missing.join(', 問') : '')
     + (r.notes?.length ? ' / 注意: ' + r.notes.join(' / ') : '');
+  if (j.kind === 'edit' && r.summary) return r.summary + (r.changedNumbers?.length ? ' (変更: 問' + r.changedNumbers.join(', ') + ')' : '') + (r.removedCount ? ' / ' + r.removedCount + ' 問削除' : '') + (r.notes?.length ? ' / 注意: ' + r.notes.join(' / ') : '');
   return '';
 }
 let pollTimer;
