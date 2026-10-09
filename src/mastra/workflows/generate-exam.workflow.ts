@@ -88,11 +88,12 @@ const generateStep = createStep({
     const spec = await getSpec(inputData.specId)
     if (!spec) throw new Error(`要件定義が見つかりません: ${inputData.specId}`)
 
-    // 参照過去問の既定は「要件定義の元になった過去問のうち最新」。別の試験の過去問が登録されていても混ざらない
+    // 参照過去問の既定は「要件定義の元になった過去問のうち最新」。別の試験の過去問が登録されていても混ざらない。
+    // 元の過去問がすべて削除されていたら参照なしにする (無関係な試験の過去問に切り替えない)
     const pastExams = await listExams({ kind: 'past' })
     const reference = inputData.referenceExamId
       ? await getExam(inputData.referenceExamId)
-      : (pastExams.find(e => spec.spec.sourceExamIds.includes(e.id)) ?? pastExams[0])
+      : (pastExams.find(e => spec.spec.sourceExamIds.includes(e.id)) ?? (spec.spec.sourceExamIds.length ? undefined : pastExams[0]))
     // 作問・校閲のツール (一覧・検索・取得) が読める過去問を、要件定義の元の過去問 + 参照過去問 +
     // 同じ要件定義から作った予想問題 (重複出題の確認用) に限定する
     const scope = [...new Set([...spec.spec.sourceExamIds, ...(reference ? [reference.id] : []), ...(await listExams({ kind: 'predicted' })).filter(e => e.specId === inputData.specId).map(e => e.id)])]

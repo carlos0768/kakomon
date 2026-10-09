@@ -10,6 +10,7 @@
  *   npm run admin -- approve <runId> [--reject] [--note "..."]
  *   npm run admin -- render  <examId> [--answers]        HTML/PDF を再生成
  *   npm run admin -- list    [exams|specs|users]
+ *   npm run admin -- delete  <examId>                 登録済みの過去問を削除する (要件定義は残る)
  *   npm run admin -- export-spec <specId> [--out path]   要件定義を Markdown で書き出す
  *   npm run admin -- user create <username> <password>   受験者アカウントを作る
  *   npm run admin -- user reset-password <username> <newPassword>   パスワードを再設定 (忘れたとき)
@@ -24,6 +25,7 @@ import { specToMarkdown } from '../mastra/services/spec-markdown.ts'
 import { listUsers, registerUser, resetPassword } from '../mastra/services/auth.ts'
 import { streamObject } from '../mastra/services/llm.ts'
 import { editExamWithPrompt } from '../mastra/services/exam-edit.ts'
+import { deleteBlockReason, deletePastExam } from '../mastra/services/exam-delete.ts'
 import { z } from 'zod'
 
 const [, , command, ...rest] = process.argv
@@ -190,6 +192,17 @@ async function main() {
       } else {
         for (const e of await listExams()) console.log(`${e.id}\t${e.kind}\t${e.status}\t${e.year ?? '-'}\t${e.title}\t${e.exam.questions.length}問`)
       }
+      break
+    }
+    case 'delete': {
+      const examId = positional[0]
+      if (!examId) throw new Error('usage: delete <examId>')
+      const blocked = await deleteBlockReason(examId)
+      if (blocked) throw new Error(blocked)
+      const res = await deletePastExam(examId)
+      if (!res) throw new Error(`exam not found: ${examId}`)
+      console.log(JSON.stringify(res, null, 2))
+      if (res.specIds.length) console.error(`\nこの過去問を元にした要件定義 (${res.specIds.join(', ')}) は残っています。必要なら analyze をやり直してください`)
       break
     }
     case 'export-spec': {

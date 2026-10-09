@@ -30,6 +30,7 @@ import { listUsers, resetPassword } from '../services/auth.ts'
 import { getSpec } from '../db/repo.ts'
 import { specToMarkdown } from '../services/spec-markdown.ts'
 import { renderExamHtml } from '../render/html.ts'
+import { deleteBlockReason, deletePastExam } from '../services/exam-delete.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -469,6 +470,26 @@ export const apiRoutes = [
         return c.json({ error: 'この試験の正解推定・正解インポート・編集が実行中です。終わってから名称を変更してください' }, 409)
       const rec = await renameExam(examId, body.data.title)
       return rec ? c.json({ ok: true, title: rec.title }) : c.json({ error: 'exam not found' }, 404)
+    },
+  }),
+  // 登録済みの過去問を削除する (設問・ベクトル索引・アップロードした PDF の控え)。要件定義は残す
+  registerApiRoute('/kakomon/admin/exams/:examId', {
+    method: 'DELETE',
+    middleware: [adminAuth],
+    handler: async c => {
+      const examId = c.req.param('examId')
+      // 正解推定・インポート・分析の開始と同時に来ても、どちらかを待たせる
+      const res = await withStartLock([`answers:${examId}`, 'analyze'], async () => {
+        const blocked = await deleteBlockReason(examId)
+        if (blocked) return c.json({ error: blocked }, 409)
+        try {
+          const result = await deletePastExam(examId)
+          return result ? c.json({ ok: true, ...result }) : c.json({ error: 'exam not found' }, 404)
+        } catch (err) {
+          return c.json({ error: err instanceof Error ? err.message : String(err) }, 400)
+        }
+      })
+      return res ?? c.json({ error: STARTING }, 409)
     },
   }),
   registerApiRoute('/kakomon/admin/exams/:examId/solve', {

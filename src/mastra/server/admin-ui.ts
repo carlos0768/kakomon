@@ -197,7 +197,8 @@ async function loadExams() {
     + '<td class="muted">' + esc((e.extractionNotes || []).slice(0, 2).join(' / ')) + '</td>'
     + '<td class="row"><a class="muted" href="/kakomon/admin/exams/' + e.examId + '/preview" target="_blank" onclick="return openPreview(event, this.href)">確認</a>'
     + (e.answeredCount < e.questionCount ? '<button class="secondary" data-act="solve:' + e.examId + '" data-exam="' + e.examId + '" data-heavy="1" onclick="solve(\\'' + e.examId + '\\')">正解を推定</button>' : '')
-    + '<button class="secondary" data-act="answers:' + e.examId + '" data-exam="' + e.examId + '" data-heavy="1" onclick="importAnswers(\\'' + e.examId + '\\')">正解データをインポート</button></td></tr>').join('') + '</table>'
+    + '<button class="secondary" data-act="answers:' + e.examId + '" data-exam="' + e.examId + '" data-heavy="1" onclick="importAnswers(\\'' + e.examId + '\\')">正解データをインポート</button>'
+    + '<button class="danger small" data-act="delete:' + e.examId + '" data-exam="' + e.examId + '" onclick="deleteExam(\\'' + e.examId + '\\')" title="この過去問の登録を削除">削除</button></td></tr>').join('') + '</table>'
     : '<p class="muted">まだ登録されていません。上のフォームから PDF をアップロードしてください。</p>';
   // 参照過去問の選択肢
   $('#genRef').innerHTML = '<option value="">見た目の参照: 最新の過去問</option>' + past.map(e => '<option value="' + e.examId + '">' + esc((e.year ?? '') + ' ' + e.title) + '</option>').join('');
@@ -232,6 +233,22 @@ window.renameExam = examId => {
   return act('rename:' + examId, async () => {
     try { await api('/kakomon/admin/exams/' + examId + '/title', { method: 'POST', body: JSON.stringify({ title: title.trim() }) }); await loadExams(); }
     catch (err) { alert(err.message); }
+  });
+};
+// 過去問の削除 (正解推定・インポートの実行中は押せない。分析・作問中の衝突はサーバ側で断る)
+window.deleteExam = examId => {
+  if (pending.has('delete:' + examId)) return;
+  const e = exams.find(x => x.examId === examId); if (!e) return;
+  const used = specs.filter(s => (s.sourceExamIds || []).includes(examId));
+  const msg = (e.year ?? '') + ' ' + (e.session ?? '') + ' ' + e.title + ' (' + e.questionCount + '問) の登録を削除しますか？\\n設問・正解・解説も消え、元に戻せません。'
+    + (used.length ? '\\n\\nこの過去問を元にした要件定義が ' + used.length + ' 件あります (' + used.map(s => s.title).join(', ') + ')。要件定義は残り作問にも使えますが、作問時に参照する過去問からは外れます。' : '');
+  if (!confirm(msg)) return;
+  return act('delete:' + examId, async () => {
+    try {
+      const r = await api('/kakomon/admin/exams/' + examId, { method: 'DELETE' });
+      if (r.notes && r.notes.length) alert('削除しました。\\n' + r.notes.join('\\n'));
+      await loadExams();
+    } catch (err) { alert(err.message); }
   });
 };
 window.solve = examId => act('solve:' + examId, async () => { if (me && me.serverless) { alert('Vercel 上では実行できません。手元の管理画面から実行してください'); return; } try { await api('/kakomon/admin/exams/' + examId + '/solve', { method: 'POST' }); await loadJobs(); } catch (e) { alert(e.message); } });
