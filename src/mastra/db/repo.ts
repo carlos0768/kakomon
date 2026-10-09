@@ -167,10 +167,13 @@ export async function renameExam(id: string, title: string): Promise<ExamRecord 
   })
 }
 
+/** 試験と設問を消す (途中で失敗して設問だけ残ることがないよう 1 トランザクションで) */
 export async function deleteExam(id: string): Promise<void> {
   await ensureSchema()
-  await getDb().execute('DELETE FROM questions WHERE exam_id = ?', [id])
-  await getDb().execute('DELETE FROM exams WHERE id = ?', [id])
+  await getDb().transaction(async tx => {
+    await tx.execute('DELETE FROM questions WHERE exam_id = ?', [id])
+    await tx.execute('DELETE FROM exams WHERE id = ?', [id])
+  })
 }
 
 // ---------- questions ----------
