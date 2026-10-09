@@ -101,8 +101,42 @@ export async function getJob(id: string): Promise<Job | undefined> {
 
 export async function listJobs(limit = 50): Promise<Job[]> {
   await ensureSchema()
+  await failStaleJobs()
   const rows = await getDb().execute(`SELECT * FROM jobs ORDER BY created_at DESC LIMIT ${Math.min(limit, 200)}`)
   return rows.map(rowToJob)
+}
+
+/** 進捗の更新が止まってからこの時間を超えた実行中ジョブは、プロセスが死んだものとして失敗扱いにする */
+export const STALE_JOB_MS = Number(process.env.KAKOMON_STALE_JOB_MINUTES || 15) * 60 * 1000
+
+/**
+ * 実行中のまま進捗 (updated_at) が止まったジョブを failed にする。
+ * ステップは思考中・ツール実行中もハートビートを書くので、長時間止まるのはサーバ停止・スリープ・
+ * サーバレス上で起動して関数が止まった場合に限られる。実行中のまま残ると二重起動防止に引っかかる。
+ */
+export async function failStaleJobs(now = Date.now()): Promise<number> {
+  const rows = await getDb().execute(`SELECT id, updated_at FROM jobs WHERE status = 'running'`)
+  let count = 0
+  for (const r of rows) {
+    const updated = parseDbTime(str(r.updated_at))
+    if (!Number.isFinite(updated) || now - updated < STALE_JOB_MS) continue
+    const minutes = Math.round((now - updated) / 60000)
+    await getDb().execute(`UPDATE jobs SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [
+      `${minutes} 分以上進捗の更新が無いため中断扱いにしました。サーバ (npm run dev) が止まった、PC がスリープした、または Vercel 上で起動した可能性があります。手元のサーバを起動してもう一度実行してください`,
+      String(r.id),
+    ])
+    count++
+  }
+  return count
+}
+
+/** DB の時刻文字列 (Postgres: "2026-10-08 15:12:01.54+00" / libSQL: "2026-10-08 15:12:01", どちらも UTC) をミリ秒にする */
+export function parseDbTime(s?: string): number {
+  if (!s) return NaN
+  let t = s.trim().replace(' ', 'T')
+  if (/[+-]\d\d$/.test(t)) t += ':00' // Postgres の "+00" は JS が解釈できないので "+00:00" にする
+  else if (!/[zZ]$|[+-]\d\d:\d\d$/.test(t)) t += 'Z'
+  return Date.parse(t)
 }
 
 /** 実行中のジョブのうち条件に合う最初のもの (二重起動の防止に使う) */

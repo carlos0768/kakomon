@@ -134,7 +134,14 @@ async function init() {
     me = await api('/kakomon/admin/whoami');
     $('#login').style.display = 'none'; $('#app').style.display = '';
     $('#envInfo').textContent = 'DB: ' + me.dbDialect + (me.serverless ? ' / Vercel' : ' / ローカル') + (me.authRequired ? '' : ' / 認証なし');
-    $('#uploadHint').textContent = '写真をまとめた PDF でも可 (' + mb(me.maxUploadBytes) + ' まで' + (me.serverless ? '。Vercel の制限なので、それより大きい PDF は手元の npm run dev の管理画面から' : '') + ')。取り込みには数分かかります。進行状況は「ジョブ」に出ます。';
+    $('#uploadHint').textContent = '写真をまとめた PDF でも可 (' + mb(me.maxUploadBytes) + ' まで)。取り込みには数分かかります。進行状況は「ジョブ」に出ます。';
+    if (me.serverless) {
+      // Vercel 上では応答直後に関数が止まるため、重いジョブは始められない (承認・公開切替・ユーザー管理のみ)
+      const note = 'Vercel 上では実行できません。手元で npm run dev を起動した管理画面 (http://localhost:4111/kakomon/admin) から実行してください';
+      for (const id of ['#uploadBtn', '#analyzeBtn', '#generateBtn']) { const b = $(id); b.disabled = true; b.title = note; }
+      $('#uploadHint').textContent = note + '。ここでは承認・公開切替・ユーザー管理ができます。';
+      $('#analyzeErr').textContent = note; $('#generateErr').textContent = note;
+    }
     await refreshAll(); startPolling();
   } catch (e) {
     $('#login').style.display = ''; $('#app').style.display = 'none';
@@ -170,7 +177,7 @@ window.openPreview = async (ev, href) => {
   const w = window.open('', '_blank'); w.document.open(); w.document.write(html); w.document.close();
   return false;
 };
-window.solve = async examId => { try { await api('/kakomon/admin/exams/' + examId + '/solve', { method: 'POST' }); await loadJobs(); } catch (e) { alert(e.message); } };
+window.solve = async examId => { if (me && me.serverless) { alert('Vercel 上では実行できません。手元の管理画面から実行してください'); return; } try { await api('/kakomon/admin/exams/' + examId + '/solve', { method: 'POST' }); await loadJobs(); } catch (e) { alert(e.message); } };
 $('#uploadForm').onsubmit = async e => {
   e.preventDefault(); $('#uploadErr').textContent = '';
   const f = $('#pdf').files[0];

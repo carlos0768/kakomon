@@ -40,8 +40,22 @@ import { randomUUID } from 'node:crypto'
  * 作問・分析そのものは Mastra 標準の /api/workflows/* (Studio) か CLI から実行する。
  */
 
-/** ジョブ開始前にモデル API の疎通 (キー・残高) を確認し、ダメなら 400 の Response を返す */
+/**
+ * ジョブ開始前の共通チェック。
+ * 1) Vercel などのサーバレス上では応答を返した直後に関数が止まり、バックグラウンドのジョブは途中で死ぬ
+ *    (記録だけ「実行中」のまま残る) ので、重いジョブはそもそも始めない。
+ * 2) モデル API の疎通 (キー・残高) を確認し、ダメなら 400 の Response を返す
+ */
 async function preflightOr400(c: { get(key: 'mastra'): Mastra; json: (body: unknown, status: 400) => Response }): Promise<Response | undefined> {
+  if (config.isServerless && process.env.KAKOMON_ALLOW_SERVERLESS_JOBS !== '1') {
+    return c.json(
+      {
+        error:
+          'Vercel 上では取り込み・分析・作問・正解推定を実行できません (応答を返した直後に関数が止まり、ジョブが途中で死にます)。手元で npm run dev を起動した管理画面 (http://localhost:4111/kakomon/admin) から実行してください。承認・公開切替・ユーザー管理はここでできます。',
+      },
+      400,
+    )
+  }
   try {
     await preflightModel(c.get('mastra'))
     return undefined
