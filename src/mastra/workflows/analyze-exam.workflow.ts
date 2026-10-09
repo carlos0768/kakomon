@@ -67,7 +67,9 @@ ${structure}
         // "The compiled grammar is too large" で拒否するため、スキーマはプロンプトに注入する
         structuredOutput: { schema: examSpecSchema, jsonPromptInjection: true },
         maxSteps: 40,
-        modelSettings: { maxOutputTokens: 32000 },
+        // 思考トークンも上限に含まれる。要件定義 (分野・トピック・キーワード・大問構成) の JSON + effort high の思考で
+        // 32000 では finishReason=length に当たったため、作問・取り込みと同じ 64000 にする (Opus 5.5 の上限は 128000)
+        modelSettings: { maxOutputTokens: 64000 },
         providerOptions: anthropicOptions('high'),
       },
       { progress },
