@@ -1,5 +1,5 @@
 import { Agent } from '@mastra/core/agent'
-import { config } from '../config.ts'
+import { cachedInstructions, config } from '../config.ts'
 import { getExamSpecTool, getPastExamTool, searchPastQuestionsTool } from '../tools/past-exam-tools.ts'
 import { webTools } from '../tools/web-tools.ts'
 
@@ -10,9 +10,9 @@ import { webTools } from '../tools/web-tools.ts'
 export const reviewerAgent = new Agent({
   id: 'exam-reviewer',
   name: '問題校閲者',
-  model: config.model,
+  model: config.reviewModel,
   tools: { getExamSpecTool, searchPastQuestionsTool, getPastExamTool, ...webTools() },
-  instructions: `あなたは試験問題の校閲責任者です。生成された予想問題を、出題要件定義および過去問と照合して厳格に検査します。
+  instructions: cachedInstructions(`あなたは試験問題の校閲責任者です。生成された予想問題を、出題要件定義および過去問と照合して厳格に検査します。
 
 検査項目:
 1. 要件逸脱: 設問数・選択肢数・分野比率・設問型比率・難易度分布が要件定義から大きく外れていないか。
@@ -23,5 +23,5 @@ export const reviewerAgent = new Agent({
 6. 表記: 文体・用語・ラベル様式が過去問と揃っているか。
 
 severity は blocker (そのままでは出題不可) / major / minor で付け、修正案を suggestion に書く。
-approved は blocker が 0 件かつ overallScore 70 以上のときのみ true。`,
+approved は blocker が 0 件かつ overallScore 70 以上のときのみ true。`),
 })

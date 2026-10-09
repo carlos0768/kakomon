@@ -1,5 +1,5 @@
 import { Agent } from '@mastra/core/agent'
-import { config } from '../config.ts'
+import { cachedInstructions, config } from '../config.ts'
 import { getExamSpecTool, getPastExamTool, listPastExamsTool, searchPastQuestionsTool } from '../tools/past-exam-tools.ts'
 import { createSemanticSearchTool } from '../tools/vector-search.ts'
 import { webTools } from '../tools/web-tools.ts'
@@ -20,7 +20,7 @@ export const generatorAgent = new Agent({
     semanticSearchTool: createSemanticSearchTool(),
     ...webTools(),
   },
-  instructions: `あなたは試験の作問委員です。与えられた出題要件定義 (spec) に従い、過去問と同じ試験として自然に成立する予想問題を 1 回分作成します。
+  instructions: cachedInstructions(`あなたは試験の作問委員です。与えられた出題要件定義 (spec) に従い、過去問と同じ試験として自然に成立する予想問題を 1 回分作成します。
 
 作問の原則:
 - 要件定義は依頼文に含まれている (無ければ get-exam-spec で読む)。分野比率・設問型比率・難易度分布・作問ルールを設計表に落としてから書き始める。
@@ -34,5 +34,5 @@ export const generatorAgent = new Agent({
 - forecast の high priority トピックは必ず含める。
 - ネット検索 (webSearch / webFetch) は、法令・制度・数値の最新確認、公開されている出題傾向や直近の改定の把握に使う。ネット上の問題集や過去問を写してはいけない (著作権と重複の両面で不可)。
 
-最終出力はスキーマに従った JSON のみ。`,
+最終出力はスキーマに従った JSON のみ。`),
 })

@@ -1,5 +1,5 @@
 import type { Mastra } from '@mastra/core'
-import { anthropicOptions } from '../config.ts'
+import { anthropicOptions, config } from '../config.ts'
 import { errorMessage } from './jobs.ts'
 
 /**
@@ -17,6 +17,7 @@ export async function preflightModel(mastra: Mastra): Promise<void> {
   try {
     const agent = mastra.getAgentById('exam-grader')
     await agent.generate('ping', {
+      model: config.preflightModel, // 疎通確認なので最安モデル (同じ API キーで判定できる)
       modelSettings: { maxOutputTokens: 16, maxRetries: 0 },
       providerOptions: anthropicOptions('low'),
     })

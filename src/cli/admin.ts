@@ -97,7 +97,7 @@ async function main() {
           passages: rec.exam.passages,
           questions: targets.map(q => ({ number: q.number, passageId: q.passageId, passage: q.passage, stem: q.stem, choices: q.choices.map(c => ({ label: c.label, text: c.text })) })),
         })}`,
-        { structuredOutput: { schema, jsonPromptInjection: 'auto' }, modelSettings: { maxOutputTokens: 32000 }, providerOptions: anthropicOptions('high') },
+        { structuredOutput: { schema, jsonPromptInjection: 'auto' }, model: config.model, modelSettings: { maxOutputTokens: 32000 }, providerOptions: anthropicOptions('high') },
       )
       const parsed = schema.parse(raw)
       for (const a of parsed.answers) {
