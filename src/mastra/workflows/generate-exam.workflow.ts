@@ -8,7 +8,7 @@ import { extractedExamSchema, layoutProfileSchema, passageSchema, questionSchema
 import { reviewResultSchema } from '../schemas/spec.ts'
 import { applyRevision, batchSizeFromEnv, mergeBatch, planBatches, type GeneratedParts } from '../services/generation-plan.ts'
 import { setExamScope } from '../services/exam-scope.ts'
-import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
+import { jobIdFrom, progressReporter, rethrowIfCancelled } from '../services/job-progress.ts'
 import { streamObject } from '../services/llm.ts'
 import { specToMarkdown } from '../services/spec-markdown.ts'
 
@@ -198,6 +198,7 @@ ${JSON.stringify(acc.questions.filter(q => !flagged.has(q.number)).map(q => ({ n
         notes.push(...applyRevision(acc, revisionSchema.parse(raw)))
         await persistDraft('draft', [`改訂 ${revisions} 回目を反映`])
       } catch (err) {
+        rethrowIfCancelled(err)
         notes.push(`改訂 ${revisions} 回目に失敗したため、校閲前の内容のまま管理者確認に回します: ${err instanceof Error ? err.message : String(err)}`)
         break
       }
@@ -219,6 +220,7 @@ ${JSON.stringify(acc.questions.filter(q => !flagged.has(q.number)).map(q => ({ n
       try {
         return await runReview()
       } catch (err) {
+        rethrowIfCancelled(err)
         const message = `校閲に失敗したため未校閲のまま管理者確認に回します: ${err instanceof Error ? err.message : String(err)}`
         notes.push(message)
         return reviewResultSchema.parse({

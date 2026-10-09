@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { Mastra } from '@mastra/core'
 import { RequestContext } from '@mastra/core/request-context'
 import { z } from 'zod'
@@ -6,17 +8,18 @@ import { anthropicOptions, config } from '../config.ts'
 import { ensureSchema, getDb, type Row } from '../db/client.ts'
 import { getExam, saveExam } from '../db/repo.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
-import { JOB_ID_KEY, progressReporter, type JobProgress } from './job-progress.ts'
+import { abortJob, JOB_ID_KEY, JobCancelledError, progressReporter, registerJobAbort, releaseJobAbort, type JobProgress } from './job-progress.ts'
 import { streamObject } from './llm.ts'
 
 /**
  * 管理画面から起動する非同期ジョブ。
  * ワークフロー (ingest / analyze / generate) や正解推定 (solve) をバックグラウンドで実行し、
  * 進行状況と結果を jobs テーブルに残す。承認待ち (suspended) のジョブは resume できる。
+ * 実行中のジョブは cancelJob で停止できる (status = cancelled)。
  */
 
-export type JobKind = 'ingest' | 'analyze' | 'generate' | 'solve'
-export type JobStatus = 'running' | 'suspended' | 'success' | 'failed' | 'rejected'
+export type JobKind = 'ingest' | 'analyze' | 'generate' | 'solve' | 'answers'
+export type JobStatus = 'running' | 'suspended' | 'success' | 'failed' | 'rejected' | 'cancelled'
 
 export interface Job {
   id: string
@@ -34,7 +37,7 @@ export interface Job {
   updatedAt: string
 }
 
-const WORKFLOW_BY_KIND: Record<Exclude<JobKind, 'solve'>, 'ingestExamWorkflow' | 'analyzeExamWorkflow' | 'generateExamWorkflow'> = {
+const WORKFLOW_BY_KIND: Record<Exclude<JobKind, 'solve' | 'answers'>, 'ingestExamWorkflow' | 'analyzeExamWorkflow' | 'generateExamWorkflow'> = {
   ingest: 'ingestExamWorkflow',
   analyze: 'analyzeExamWorkflow',
   generate: 'generateExamWorkflow',
@@ -86,11 +89,75 @@ async function insertJob(job: { id: string; kind: JobKind; title: string; runId?
   ])
 }
 
-async function updateJob(id: string, patch: { status: JobStatus; result?: unknown; suspend?: unknown; error?: string }): Promise<void> {
+/** 実行中のジョブだけを終了状態にする。停止 (cancelled) された後にワークフローが返ってきても上書きしない */
+async function finishJob(id: string, patch: { status: JobStatus; result?: unknown; suspend?: unknown; error?: string }): Promise<void> {
   await getDb().execute(
-    `UPDATE jobs SET status = ?, result_json = ?, suspend_json = ?, error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    `UPDATE jobs SET status = ?, result_json = ?, suspend_json = ?, error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`,
     [patch.status, patch.result === undefined ? null : JSON.stringify(patch.result), patch.suspend === undefined ? null : JSON.stringify(patch.suspend), patch.error ?? null, id],
   )
+}
+
+/** 失敗時の記録。停止で投げられたエラーは (すでに cancelled なので) finishJob の条件で無視される */
+function failJob(id: string, err: unknown): Promise<void> {
+  return finishJob(id, { status: 'failed', error: errorMessage(err) })
+}
+
+/** このプロセスで実行中のワークフロー (停止ボタンで cancel する) */
+const activeRuns = new Map<string, { cancel(): Promise<void> }>()
+
+/** バックグラウンド処理の後始末 (中止シグナルと実行中ワークフローの登録を外す) */
+function settle(id: string): void {
+  releaseJobAbort(id)
+  activeRuns.delete(id)
+}
+
+/** ジョブの状態が操作に合わないときのエラー (HTTP の 404 / 409 に対応) */
+export class JobStateError extends Error {
+  constructor(
+    message: string,
+    readonly status: 404 | 409,
+  ) {
+    super(message)
+  }
+}
+
+/**
+ * 実行中のジョブを停止する。まず DB を cancelled にし (ワークフローの結果で上書きされない)、
+ * このプロセスで動いていればモデル呼び出しとワークフローを中止する。
+ * サーバ再起動などで実体が無い「実行中」のジョブも、記録だけ cancelled になる。
+ */
+export async function cancelJob(id: string): Promise<Job> {
+  await ensureSchema()
+  const rows = await getDb().execute(`UPDATE jobs SET status = 'cancelled', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running' RETURNING id`, [
+    '管理者が停止しました',
+    id,
+  ])
+  if (!rows.length) {
+    const job = await getJob(id)
+    if (!job) throw new JobStateError('ジョブが見つかりません', 404)
+    throw new JobStateError(`このジョブは実行中ではないため停止できません (状態: ${job.status})`, 409)
+  }
+  abortJob(id)
+  await activeRuns.get(id)?.cancel().catch(() => undefined)
+  return (await getJob(id))!
+}
+
+/**
+ * ジョブ開始の受付中ロック (このプロセス内)。
+ * 「実行中のジョブがあるか」の確認から jobs への登録までの間にはモデルの疎通確認などで数秒かかるため、
+ * ボタンの連打で同じリクエストが 2 つ来ると両方とも確認を通ってしまう。その間だけキーを押さえる。
+ */
+const startingKeys = new Set<string>()
+
+/** keys のどれかが受付中なら undefined を返して何もしない。そうでなければ fn を実行する */
+export async function withStartLock<T>(keys: string[], fn: () => Promise<T>): Promise<T | undefined> {
+  if (keys.some(k => startingKeys.has(k))) return undefined
+  for (const k of keys) startingKeys.add(k)
+  try {
+    return await fn()
+  } finally {
+    for (const k of keys) startingKeys.delete(k)
+  }
 }
 
 export async function getJob(id: string): Promise<Job | undefined> {
@@ -149,46 +216,54 @@ export async function findRunningJob(kind: JobKind, match: (job: Job) => boolean
 /** ワークフローの実行結果を jobs に反映する */
 async function recordWorkflowResult(jobId: string, res: { status: string; result?: unknown; steps?: Record<string, any>; error?: unknown; suspended?: unknown }) {
   if (res.status === 'success') {
-    await updateJob(jobId, { status: 'success', result: res.result })
+    await finishJob(jobId, { status: 'success', result: res.result })
   } else if (res.status === 'suspended') {
     // 承認待ち: admin-approval ステップの suspendPayload を取り出す
     const step = res.steps?.['admin-approval']
-    await updateJob(jobId, { status: 'suspended', suspend: step?.suspendPayload ?? res.suspended, result: step?.payload })
+    await finishJob(jobId, { status: 'suspended', suspend: step?.suspendPayload ?? res.suspended, result: step?.payload })
   } else {
-    await updateJob(jobId, { status: 'failed', error: errorMessage((res as { error?: unknown }).error) || `workflow status: ${res.status}` })
+    await finishJob(jobId, { status: 'failed', error: errorMessage((res as { error?: unknown }).error) || `workflow status: ${res.status}` })
   }
 }
 
 /** ワークフローをバックグラウンドで開始し、ジョブ ID を返す */
-export async function startWorkflowJob(mastra: Mastra, kind: Exclude<JobKind, 'solve'>, title: string, input: unknown): Promise<Job> {
+export async function startWorkflowJob(mastra: Mastra, kind: Exclude<JobKind, 'solve' | 'answers'>, title: string, input: unknown): Promise<Job> {
   const workflow = mastra.getWorkflow(WORKFLOW_BY_KIND[kind])
   const run = await workflow.createRun()
   const id = randomUUID()
   await insertJob({ id, kind, title, runId: run.runId, input })
+  registerJobAbort(id)
+  activeRuns.set(id, run)
   // ステップが進捗を jobs に書けるよう、requestContext でジョブ ID を渡す
   const requestContext = new RequestContext()
   requestContext.set(JOB_ID_KEY as never, id as never)
   void run
     .start({ inputData: input as never, requestContext })
     .then(res => recordWorkflowResult(id, res as never))
-    .catch(err => updateJob(id, { status: 'failed', error: errorMessage(err) }))
+    .catch(err => failJob(id, err))
+    .finally(() => settle(id))
   return (await getJob(id))!
 }
 
 /** 承認待ちの generate ジョブを再開する (approved=false なら破棄) */
 export async function resumeGenerateJob(mastra: Mastra, jobId: string, resumeData: { approved: boolean; note?: string }): Promise<Job> {
   const job = await getJob(jobId)
-  if (!job) throw new Error(`job not found: ${jobId}`)
-  if (job.kind !== 'generate' || job.status !== 'suspended' || !job.runId) throw new Error('このジョブは承認待ちではありません')
-  await updateJob(jobId, { status: 'running', result: job.result, suspend: job.suspend })
+  if (!job) throw new JobStateError('ジョブが見つかりません', 404)
+  if (job.kind !== 'generate' || !job.runId) throw new JobStateError('このジョブは承認待ちではありません', 409)
+  // 承認待ち → 実行中 の切り替えを 1 文で行い、連打で 2 回 resume されないようにする
+  const claimed = await getDb().execute(`UPDATE jobs SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'suspended' RETURNING id`, [jobId])
+  if (!claimed.length) throw new JobStateError('このジョブは承認待ちではありません (すでに承認・却下済みの可能性があります)', 409)
   const run = await mastra.getWorkflow('generateExamWorkflow').createRun({ runId: job.runId })
+  registerJobAbort(jobId)
+  activeRuns.set(jobId, run)
   void run
     .resume({ step: adminApprovalStep, resumeData })
     .then(async res => {
-      if (res.status === 'success' && !resumeData.approved) await updateJob(jobId, { status: 'rejected', result: res.result })
+      if (res.status === 'success' && !resumeData.approved) await finishJob(jobId, { status: 'rejected', result: res.result })
       else await recordWorkflowResult(jobId, res as never)
     })
-    .catch(err => updateJob(jobId, { status: 'failed', error: errorMessage(err) }))
+    .catch(err => failJob(jobId, err))
+    .finally(() => settle(jobId))
   return (await getJob(jobId))!
 }
 
@@ -223,6 +298,7 @@ export async function solveExam(mastra: Mastra, examId: string, jobId?: string) 
     { progress },
   )
   const parsed = solveSchema.parse(raw)
+  if (progress.signal?.aborted) throw new JobCancelledError()
   for (const a of parsed.answers) {
     const q = rec.exam.questions.find(q => q.number === a.number)
     if (!q) continue
@@ -242,8 +318,123 @@ export async function solveExam(mastra: Mastra, examId: string, jobId?: string) 
 export async function startSolveJob(mastra: Mastra, examId: string, title: string): Promise<Job> {
   const id = randomUUID()
   await insertJob({ id, kind: 'solve', title, input: { examId } })
+  registerJobAbort(id)
   void solveExam(mastra, examId, id)
-    .then(result => updateJob(id, { status: 'success', result }))
-    .catch(err => updateJob(id, { status: 'failed', error: errorMessage(err) }))
+    .then(result => finishJob(id, { status: 'success', result }))
+    .catch(err => failJob(id, err))
+    .finally(() => settle(id))
+  return (await getJob(id))!
+}
+
+const answerKeySchema = z.object({
+  answers: z.array(
+    z.object({
+      number: z.number().int().describe('設問番号 (渡した設問一覧の number)'),
+      correctLabel: z.string().optional().describe('正解の選択肢ラベル。渡した choices の label と同じ表記で'),
+      explanation: z.string().optional().describe('この設問の解説 (PDF に書かれている内容を要約せずに転記)'),
+      rationales: z.array(z.object({ label: z.string(), rationale: z.string() })).default([]).describe('選択肢ごとの解説が PDF にあれば'),
+    }),
+  ),
+  notes: z.array(z.string()).default([]).describe('読み取れなかった箇所・設問との対応が不確かな箇所'),
+})
+
+/**
+ * 解答・解説の PDF を読み取り、登録済みの過去問に正解と解説を付ける。
+ * PDF は公式の正解なので、AI 推定 (solve) と違い既存の正解も上書きする。
+ */
+export async function importAnswerKey(mastra: Mastra, examId: string, filePath: string, jobId?: string) {
+  const progress = progressReporter(jobId, '解答 PDF をモデルに送信中')
+  const rec = await getExam(examId)
+  if (!rec) throw new Error(`exam not found: ${examId}`)
+  const pdf = await readFile(filePath)
+  const agent = mastra.getAgentById('exam-extractor')
+  await progress.flush()
+  const raw = await streamObject(
+    agent,
+    [
+      {
+        role: 'user',
+        content: [
+          { type: 'file', data: pdf, mediaType: 'application/pdf', filename: path.basename(filePath) },
+          {
+            type: 'text',
+            text: `この PDF は、下の過去問の「解答・解説」です。設問を構造化するのではなく、各設問の正解の選択肢と解説を読み取ってください。
+- number は下の設問一覧の number に合わせる (PDF 側の番号の振り方が違う場合は、問題文・選択肢の内容で対応を取る)
+- correctLabel は下の choices の label と同じ表記にする (例: PDF が「1」で choices が「ア」「イ」… の場合は対応する label に直す)
+- 解説は PDF の記述をそのまま転記する。PDF に無い設問は answers に含めない。推測で正解を作らない
+
+${JSON.stringify({
+  title: rec.exam.title,
+  year: rec.exam.year,
+  questions: rec.exam.questions.map(q => ({ number: q.number, stem: q.stem.slice(0, 200), choices: q.choices.map(c => ({ label: c.label, text: c.text.slice(0, 80) })) })),
+})}`,
+          },
+        ],
+      },
+    ],
+    {
+      structuredOutput: { schema: answerKeySchema, jsonPromptInjection: 'auto' },
+      modelSettings: { maxOutputTokens: 64000, maxRetries: 1 },
+      providerOptions: anthropicOptions('medium'),
+    },
+    { progress },
+  )
+  await progress.setPhase('正解と解説を反映中')
+  const parsed = answerKeySchema.parse(raw)
+  const notes = [...parsed.notes]
+  const changed: { number: number; from?: string; to: string }[] = []
+  let applied = 0
+  for (const a of parsed.answers) {
+    const q = rec.exam.questions.find(q => q.number === a.number)
+    if (!q) {
+      notes.push(`問${a.number}: 過去問に該当する設問がないため無視しました`)
+      continue
+    }
+    let touched = false
+    if (a.correctLabel) {
+      const label = q.choices.find(c => c.label === a.correctLabel || c.label.normalize('NFKC') === a.correctLabel!.normalize('NFKC'))?.label
+      if (!label) notes.push(`問${a.number}: 正解「${a.correctLabel}」が選択肢 (${q.choices.map(c => c.label).join(', ')}) にないため反映しませんでした`)
+      else {
+        if (q.correctLabel !== label) changed.push({ number: q.number, from: q.correctLabel, to: label })
+        q.correctLabel = label
+        touched = true
+      }
+    }
+    if (a.explanation) {
+      q.explanation = a.explanation // AI 推定の注記 ([AI推定 confidence=…]) も公式の解説で置き換える
+      touched = true
+    }
+    for (const r of a.rationales) {
+      const c = q.choices.find(c => c.label === r.label)
+      if (c) {
+        c.rationale = r.rationale
+        touched = true
+      }
+    }
+    if (touched) applied++
+  }
+  const covered = new Set(parsed.answers.map(a => a.number))
+  const missing = rec.exam.questions.filter(q => !covered.has(q.number)).map(q => q.number)
+  if (progress.signal?.aborted) throw new JobCancelledError()
+  await saveExam({ id: rec.id, kind: rec.kind, exam: rec.exam, status: rec.status, sourceFile: rec.sourceFile, specId: rec.specId })
+  return {
+    examId: rec.id,
+    applied,
+    answeredCount: rec.exam.questions.filter(q => q.correctLabel).length,
+    questionCount: rec.exam.questions.length,
+    changed,
+    missing,
+    notes,
+  }
+}
+
+export async function startAnswerKeyJob(mastra: Mastra, examId: string, filePath: string, title: string): Promise<Job> {
+  const id = randomUUID()
+  await insertJob({ id, kind: 'answers', title, input: { examId, filePath } })
+  registerJobAbort(id)
+  void importAnswerKey(mastra, examId, filePath, id)
+    .then(result => finishJob(id, { status: 'success', result }))
+    .catch(err => failJob(id, err))
+    .finally(() => settle(id))
   return (await getJob(id))!
 }
