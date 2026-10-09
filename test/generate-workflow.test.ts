@@ -66,4 +66,32 @@ describe('generateExamWorkflow', () => {
     expect(draft?.exam.extractionNotes.some(n => n.includes('法規と技術を配分'))).toBe(true)
     expect(draft?.exam.instructions).toEqual(makeExam().instructions) // 注意書きは参照過去問から引き継ぐ
   })
+
+  it('keeps the draft and suspends for approval even when the reviewer fails to return a result', async () => {
+    const spec = await saveSpec({ spec: makeSpec({ format: { ...makeSpec().format, questionCount: 2 } }) })
+    await saveExam({ kind: 'past', exam: makeExam(), status: 'published' })
+    const generatorModel = createMockModel({
+      version: 'v2',
+      objectGenerationMode: 'json',
+      mockText: { passages: [], questions: [makeQuestion({ number: 1 }), makeQuestion({ number: 2, domain: '技術', topic: '計算' })], designNotes: '' },
+    })
+    // 校閲モックは JSON ではない文字列を返す → 構造化出力が取れず失敗する
+    const reviewerModel = createMockModel({ version: 'v2', mockText: 'ごめんなさい、今回は判定できません。' })
+    const mastra = new Mastra({
+      agents: {
+        generator: new Agent({ id: 'exam-generator', name: 'mock generator', instructions: 'mock', model: generatorModel }),
+        reviewer: new Agent({ id: 'exam-reviewer', name: 'mock reviewer', instructions: 'mock', model: reviewerModel }),
+      },
+      workflows: { generateExamWorkflow },
+      storage: new LibSQLStore({ id: 'test', url: ':memory:' }),
+      logger: false,
+    })
+    const run = await mastra.getWorkflow('generateExamWorkflow').createRun()
+    const res = await run.start({ inputData: { specId: spec.id, title: '予想問題 第2回', maxRevisions: 1 } })
+    expect(res.status).toBe('suspended')
+    const [draft] = await listExams({ kind: 'predicted' })
+    expect(draft?.status).toBe('review')
+    expect(draft?.exam.questions).toHaveLength(2)
+    expect(draft?.exam.extractionNotes.some(n => n.includes('校閲に失敗'))).toBe(true)
+  })
 })

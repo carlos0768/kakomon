@@ -47,7 +47,31 @@ export async function streamObject(
       hooks.progress?.tick(0)
     }
   }
-  return await stream.object
+  let obj: unknown
+  try {
+    obj = await stream.object
+  } catch (err) {
+    throw new Error(`構造化出力の検証に失敗しました: ${toError(err).message}${await describeStream(stream)}`)
+  }
+  if (obj === undefined || obj === null) {
+    throw new Error(`構造化出力を取得できませんでした${await describeStream(stream)}`)
+  }
+  return obj
+}
+
+/** 失敗時の診断: 終了理由と出力の長さ。思考トークンも maxOutputTokens に含まれるため、length なら上限不足の可能性が高い */
+async function describeStream(stream: { finishReason: Promise<string | undefined>; text: Promise<string> }): Promise<string> {
+  const finishReason = await stream.finishReason.catch(() => undefined)
+  const text = await stream.text.catch(() => '')
+  const hint =
+    finishReason === 'length'
+      ? '。出力上限 (思考トークンを含む maxOutputTokens) に達して途中で切れました'
+      : finishReason === 'tool-calls'
+        ? '。ツール呼び出しの上限 (maxSteps) に達し、最終出力が書かれませんでした'
+        : text.trim().length === 0
+          ? '。モデルが本文を出力しませんでした'
+          : '。出力が JSON として解釈できませんでした'
+  return ` (finishReason=${finishReason ?? '不明'}, 出力 ${text.length.toLocaleString()} 文字${hint})`
 }
 
 function toError(err: unknown): Error {
