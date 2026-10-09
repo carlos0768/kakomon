@@ -69,7 +69,7 @@ const extractStep = createStep({
         onText: text => {
           if (!started) {
             started = true
-            void progress.setPhase('設問を読み取り中')
+            void progress.setPhase('設問を読み取り中').catch(() => undefined) // 停止済みなら直後の streamObject が止める
           }
           // "number": が出るたびに設問 1 件分が始まったとみなす (目安)
           const n = (text.match(/"number"\s*:/g) ?? []).length

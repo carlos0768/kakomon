@@ -17,7 +17,7 @@ cp .env.example .env          # ANTHROPIC_API_KEY を設定
 npm run dev                   # 管理画面: http://localhost:4111/kakomon/admin / 受験者UI: /kakomon / Studio: /
 ```
 
-管理画面で「PDF アップロード → 分析 → 作問 → 確認 → 承認・公開」まで全部できる。CLI でも同じことができる:
+管理画面で「PDF アップロード → 分析 → 作問 → 確認 → 承認・公開」まで全部できる。実行中のジョブは「ジョブ」欄の「停止」で止められ、ボタンの連打で同じ処理が二重に始まることはない。CLI でも同じことができる:
 
 ```bash
 npm run admin -- ingest data/past-exams/2024.pdf --year 2024   # 過去問を登録 (複数年度)
@@ -32,6 +32,7 @@ npm run admin -- approve <runId>                                 # 承認 → da
 | 段階 | 主体 | 実体 |
 |---|---|---|
 | 過去問 PDF → 構造化 (設問・正解・分野・難易度・レイアウト) | 管理者 | `ingest-exam` ワークフロー |
+| 解答・解説 PDF → 過去問に公式の正解と解説を反映 (管理画面の「正解データをインポート」) | 管理者 | `importAnswerKey` (`services/jobs.ts`) |
 | 傾向分析 → 出題要件定義 | 管理者 | `analyze-exam` ワークフロー (分析 LLM が過去問ツールを使う) |
 | 予想問題生成 → 校閲 → 承認 → HTML/PDF 出力 → 公開 | 管理者 | `generate-exam` ワークフロー (承認待ちで suspend) |
 | 承認前の予想問題をプロンプトで編集 | 管理者 | `services/exam-edit.ts` (変更分だけ LLM に出させ、コードで当てはめる) |

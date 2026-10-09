@@ -154,6 +154,19 @@ export async function updateExamStatus(id: string, status: ExamStatus): Promise<
   await getDb().execute('UPDATE exams SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [status, id])
 }
 
+/** 試験名を変更する (一覧用の列と、data_json 内の exam.title の両方) */
+export async function renameExam(id: string, title: string): Promise<ExamRecord | undefined> {
+  await ensureSchema()
+  return getDb().transaction(async tx => {
+    const [row] = await tx.execute('SELECT * FROM exams WHERE id = ?', [id])
+    if (!row) return undefined
+    const rec = rowToExam(row)
+    rec.exam.title = title
+    await tx.execute('UPDATE exams SET title = ?, data_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [title, JSON.stringify(rec.exam), id])
+    return { ...rec, title }
+  })
+}
+
 export async function deleteExam(id: string): Promise<void> {
   await ensureSchema()
   await getDb().execute('DELETE FROM questions WHERE exam_id = ?', [id])

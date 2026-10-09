@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { resetDbForTests } from '../src/mastra/db/client.ts'
-import { aggregateQuestions, createAttempt, getExam, listAttempts, listExams, saveExam, saveSpec, searchQuestions, submitAttempt, updateExamStatus } from '../src/mastra/db/repo.ts'
+import { aggregateQuestions, createAttempt, getExam, listAttempts, listExams, renameExam, saveExam, saveSpec, searchQuestions, submitAttempt, updateExamStatus } from '../src/mastra/db/repo.ts'
 import { gradeDeterministic } from '../src/mastra/services/grading.ts'
 import { makeExam, makeSpec } from './fixtures.ts'
 
@@ -51,5 +51,16 @@ describe('repo', () => {
     const list = await listAttempts('u1', 'submitted')
     expect(list).toHaveLength(1)
     expect(list[0]?.result?.score).toBe(1)
+  })
+
+  it('renames an exam in both the list column and the stored exam data', async () => {
+    const rec = await saveExam({ kind: 'past', exam: makeExam(), status: 'published' })
+    const renamed = await renameExam(rec.id, '○○試験 (改称)')
+    expect(renamed?.title).toBe('○○試験 (改称)')
+    const got = await getExam(rec.id)
+    expect(got?.title).toBe('○○試験 (改称)')
+    expect(got?.exam.title).toBe('○○試験 (改称)')
+    expect(got?.exam.questions).toHaveLength(3)
+    expect(await renameExam('missing', 'x')).toBeUndefined()
   })
 })
