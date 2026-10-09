@@ -2,10 +2,14 @@ import { createTool } from '@mastra/core/tools'
 import { z } from 'zod'
 import { aggregateQuestions, getExam, getSpec, listExams, searchQuestions } from '../db/repo.ts'
 import { questionSchema, passageSchema } from '../schemas/exam.ts'
+import { examScopeFrom, restrictToScope } from '../services/exam-scope.ts'
 
 /**
  * 作問 LLM が過去問に自由にアクセスするためのツール群。
  * プロンプトに過去問を全部貼るのではなく、必要な設問を自分で引けるようにする。
+ *
+ * ワークフローが requestContext に対象の過去問 ID (exam-scope.ts) を載せていれば、
+ * どのツールもその範囲の外は見せない (傾向分析で別の試験が混ざるのを防ぐ)。
  */
 
 export const listPastExamsTool = createTool({
@@ -27,8 +31,9 @@ export const listPastExamsTool = createTool({
       }),
     ),
   }),
-  execute: async ({ kind }) => {
-    const exams = await listExams(kind === 'all' ? {} : { kind })
+  execute: async ({ kind }, { requestContext }) => {
+    const scope = examScopeFrom(requestContext)
+    const exams = (await listExams(kind === 'all' ? {} : { kind })).filter(e => !scope || scope.includes(e.id))
     return {
       exams: exams.map(e => ({
         examId: e.id,
@@ -60,7 +65,9 @@ export const getPastExamTool = createTool({
     passages: z.array(passageSchema).describe('複数の設問で共有される資料文。設問の passageId が参照する'),
     questions: z.array(questionSchema),
   }),
-  execute: async ({ examId, numbers }) => {
+  execute: async ({ examId, numbers }, { requestContext }) => {
+    const scope = examScopeFrom(requestContext)
+    if (scope && !scope.includes(examId)) throw new Error(`exam ${examId} is outside the analysis scope. Use list-past-exams to see the exams you may read`)
     const rec = await getExam(examId)
     if (!rec) throw new Error(`exam not found: ${examId}`)
     const set = numbers?.length ? new Set(numbers) : undefined
@@ -97,8 +104,8 @@ export const searchPastQuestionsTool = createTool({
       }),
     ),
   }),
-  execute: async input => {
-    const hits = await searchQuestions(input)
+  execute: async (input, { requestContext }) => {
+    const hits = await searchQuestions({ ...input, examIds: restrictToScope(examScopeFrom(requestContext)) })
     return { hits }
   },
 })
@@ -123,7 +130,12 @@ export const getQuestionStatsTool = createTool({
       }),
     ),
   }),
-  execute: async ({ examIds }) => ({ rows: await aggregateQuestions(examIds) }),
+  execute: async ({ examIds }, { requestContext }) => {
+    const ids = restrictToScope(examScopeFrom(requestContext), examIds)
+    // 範囲内に該当が無ければ空 (範囲外の集計を返さない)
+    if (ids && ids.length === 0) return { rows: [] }
+    return { rows: await aggregateQuestions(ids) }
+  },
 })
 
 export const getExamSpecTool = createTool({

@@ -3,12 +3,15 @@ import { z } from 'zod'
 import { anthropicOptions } from '../config.ts'
 import { listExams, saveSpec } from '../db/repo.ts'
 import { examSpecSchema } from '../schemas/spec.ts'
+import { setExamScope } from '../services/exam-scope.ts'
 import { jobIdFrom, progressReporter } from '../services/job-progress.ts'
 import { streamObject } from '../services/llm.ts'
 
 /**
  * 出題傾向分析 → 出題要件定義 (ExamSpec) の作成。
  * アナリストはツールで過去問を読み込むため、プロンプトに全文を貼らない。
+ * 対象の過去問を選んだ場合は requestContext に範囲を載せ、ツールが対象外の過去問を返さないようにする
+ * (別の試験の過去問が登録されていても混ざらない)。
  */
 
 const inputSchema = z.object({
@@ -26,8 +29,15 @@ const analyzeStep = createStep({
     const progress = progressReporter(jobIdFrom(requestContext), '過去問を読んで傾向を分析中')
     await progress.flush()
     const exams = await listExams({ kind: 'past' })
-    const targets = inputData.examIds?.length ? exams.filter(e => inputData.examIds!.includes(e.id)) : exams
+    const wanted = inputData.examIds?.length ? [...new Set(inputData.examIds)] : undefined
+    const targets = wanted ? exams.filter(e => wanted.includes(e.id)) : exams
+    if (wanted) {
+      const missing = wanted.filter(id => !targets.some(e => e.id === id))
+      if (missing.length) throw new Error(`分析対象に指定された過去問が見つかりません: ${missing.join(', ')}`)
+    }
     if (targets.length === 0) throw new Error('分析対象の過去問が登録されていません。先に ingest を実行してください')
+    // ツール (一覧・統計・検索・取得) を対象の過去問に限定する
+    if (requestContext) setExamScope(requestContext, targets.map(e => e.id))
 
     const agent = mastra.getAgentById('exam-analyst')
     const list = targets
@@ -41,8 +51,9 @@ ${list}
 ${inputData.title ? `\n試験名: ${inputData.title}` : ''}
 ${inputData.focus ? `\n管理者からの指示: ${inputData.focus}` : ''}
 
-sourceExamIds には上記の examId をすべて入れてください。`,
+上記以外の過去問は対象外です (ツールにも出てきません)。sourceExamIds には上記の examId をすべて入れてください。`,
       {
+        requestContext,
         // ツール 7 個 + 大きなスキーマをネイティブ構造化出力にすると Anthropic が
         // "The compiled grammar is too large" で拒否するため、スキーマはプロンプトに注入する
         structuredOutput: { schema: examSpecSchema, jsonPromptInjection: true },

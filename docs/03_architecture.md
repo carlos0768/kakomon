@@ -117,7 +117,7 @@ Mastra 標準の `/api/*` (agents / workflows / Studio) に加えて、独自ル
 | POST | `/kakomon/admin/exams/:examId/solve` | 正解推定ジョブを開始 |
 | POST | `/kakomon/admin/upload` (multipart: file, title, year, session) | PDF を保存して取り込みジョブを開始 |
 | GET | `/kakomon/admin/specs` / `/kakomon/admin/specs/:id/markdown` | 要件定義一覧 / Markdown |
-| POST | `/kakomon/admin/analyze` `{title?, focus?, examIds?}` | 傾向分析ジョブを開始 |
+| POST | `/kakomon/admin/analyze` `{title?, focus?, examIds?}` | 傾向分析ジョブを開始。`examIds` を指定すると、その過去問だけを対象にし、ツールもその範囲に限定される (存在しない ID は 400) |
 | POST | `/kakomon/admin/generate` `{specId, title, referenceExamId?, questionCount?, instructions?}` | 作問ジョブを開始 (承認待ちで止まる) |
 | GET | `/kakomon/admin/jobs` / `/kakomon/admin/jobs/:id` | ジョブ一覧 / 詳細 |
 | POST | `/kakomon/admin/jobs/:id/approve` `{approved, note?}` | 承認待ちの作問ジョブを再開 (公開 or 却下) |
