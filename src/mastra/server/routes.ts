@@ -5,7 +5,7 @@ import { config } from '../config.ts'
 import { ensureSchema, getDb } from '../db/client.ts'
 import { createAttempt, getAttempt, getExam, getWeaknessReport, listAttempts, listExams, listSpecs, updateExamStatus } from '../db/repo.ts'
 import { answerSchema } from '../schemas/grading.ts'
-import { toPublicQuestion } from '../schemas/exam.ts'
+import { toPublicQuestion, type ExtractedExam } from '../schemas/exam.ts'
 import {
   AuthError,
   authenticate,
@@ -87,6 +87,17 @@ const credentialsSchema = z.object({ username: z.string().min(1), password: z.st
 
 function publicUser(u: User) {
   return { userId: u.id, username: u.username }
+}
+
+/** 問題/解答を別ファイルの HTML としてダウンロードさせるレスポンス (印刷→PDF 保存もできる) */
+function downloadHtml(c: { header(k: string, v: string): void; body(b: string): Response }, exam: ExtractedExam, examId: string, kind: 'questions' | 'answers') {
+  const answers = kind === 'answers'
+  const html = renderExamHtml(exam, { withAnswers: answers, titleSuffix: answers ? '【解答・解説】' : '【問題】' })
+  const label = answers ? '解答' : '問題'
+  const name = `${exam.title}_${label}.html`
+  c.header('Content-Type', 'text/html; charset=utf-8')
+  c.header('Content-Disposition', `attachment; filename="${examId}-${kind}.html"; filename*=UTF-8''${encodeURIComponent(name)}`)
+  return c.body(html)
 }
 
 export const apiRoutes = [
@@ -236,6 +247,17 @@ export const apiRoutes = [
       if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
       const { renderExamHtml } = await import('../render/html.ts')
       return c.html(renderExamHtml(rec.exam))
+    },
+  }),
+
+  // ---- 問題のダウンロード (正解は含まない。解答は管理者のみ) ----
+  registerApiRoute('/kakomon/exams/:examId/download', {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
+      return downloadHtml(c, rec.exam, rec.id, 'questions')
     },
   }),
 
@@ -395,6 +417,16 @@ export const apiRoutes = [
       const rec = await getExam(c.req.param('examId'))
       if (!rec) return c.text('not found', 404)
       return c.html(renderExamHtml(rec.exam, { withAnswers: c.req.query('answers') !== '0' }))
+    },
+  }),
+  // 問題 (kind=questions) と解答・解説 (kind=answers) を別ファイルでダウンロード
+  registerApiRoute('/kakomon/admin/exams/:examId/download', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec) return c.text('not found', 404)
+      return downloadHtml(c, rec.exam, rec.id, c.req.query('kind') === 'answers' ? 'answers' : 'questions')
     },
   }),
   registerApiRoute('/kakomon/admin/exams/:examId/status', {
