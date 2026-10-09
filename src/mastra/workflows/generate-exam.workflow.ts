@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createStep, createWorkflow } from '@mastra/core/workflows'
 import { z } from 'zod'
 import { anthropicOptions, config } from '../config.ts'
@@ -57,6 +58,8 @@ const generateStep = createStep({
   inputSchema,
   outputSchema: z.object({
     input: inputSchema,
+    /** バッチごとに保存している下書きの ID (途中で失敗しても残る) */
+    examId: z.string(),
     generated: generatedExamSchema,
     review: reviewResultSchema,
     revisions: z.number().int(),
@@ -91,6 +94,29 @@ ${specToMarkdown(spec.spec, inputData.specId)}
 
     const acc: GeneratedParts = { passages: [], questions: [], designNotes: [] }
     const notes: string[] = []
+    const examId = randomUUID()
+
+    // バッチが 1 つ終わるごとに下書きを DB に保存する。後続 (校閲・改訂) で失敗しても生成済みの設問は残る
+    const persistDraft = async (status: 'draft' | 'review', extraNotes: string[] = []) => {
+      if (!acc.questions.length) return
+      await saveExam({
+        id: examId,
+        kind: 'predicted',
+        status,
+        specId: inputData.specId,
+        exam: extractedExamSchema.parse({
+          title: inputData.title,
+          year: new Date().getFullYear(),
+          session: '予想',
+          timeLimitMinutes: spec.spec.format.timeLimitMinutes ?? reference?.exam.timeLimitMinutes,
+          instructions: reference?.exam.instructions ?? [],
+          passages: acc.passages,
+          questions: acc.questions,
+          layout,
+          extractionNotes: [`generated from spec ${inputData.specId}`, ...extraNotes, ...notes, acc.designNotes.join('\n')].filter(Boolean),
+        }),
+      })
+    }
 
     // 1 回分を一度に出すと出力トークン上限 (finishReason=length) に当たるため、分野配分を保ってバッチ生成する。
     // 生成・校閲はツールを持ちスキーマも大きいので、ネイティブ構造化出力 ("compiled grammar is too large") ではなく
@@ -111,45 +137,62 @@ ${done.length ? `- すでに作成済みの設問 (題材・問い方の重複�
         {
           structuredOutput: { schema: generatedBatchSchema, jsonPromptInjection: true },
           maxSteps: 60,
-          modelSettings: { maxOutputTokens: 32000 },
+          // 思考トークンも上限に含まれる (15 問の出力 ~1.5 万 + 思考)
+          modelSettings: { maxOutputTokens: 64000 },
           providerOptions: anthropicOptions(config.generateEffort),
         },
         { progress },
       )
       notes.push(...mergeBatch(acc, generatedBatchSchema.parse(raw), plan))
+      await persistDraft('draft', [`生成中 (${plan.index}/${plans.length} バッチ完了)`])
     }
     if (!acc.questions.length) throw new Error('作問結果が空でした')
 
+    // 校閲と改訂は「失敗しても下書きを捨てない」。失敗は注意書きとして残し、管理者の確認に回す
     let revisions = 0
-    let review = await runReview()
+    let review = await runReviewSafely()
     while (!review.approved && revisions < inputData.maxRevisions) {
       revisions++
       await progress.setPhase(`校閲の指摘を反映して改訂中 (${revisions} 回目)`)
+      const flagged = new Set(review.issues.map(i => i.questionNumber).filter((n): n is number => typeof n === 'number'))
+      const targets = acc.questions.filter(q => flagged.has(q.number))
+      const passageIds = new Set(targets.map(q => q.passageId).filter(Boolean))
       const issues = review.issues
         .map(i => `- [${i.severity}/${i.category}] ${i.questionNumber ? `問${i.questionNumber}: ` : ''}${i.message}${i.suggestion ? ` → ${i.suggestion}` : ''}`)
         .join('\n')
-      const raw = await streamObject(
-        generator,
-        `${basePrompt}
-
-現在の草案 (JSON):
-${JSON.stringify({ passages: acc.passages, questions: acc.questions })}
+      try {
+        // 全体を送らず、指摘された設問とその資料文、それ以外は見出しだけを渡す (入力と思考を減らす)
+        const raw = await streamObject(
+          generator,
+          `${basePrompt}
 
 校閲者から次の指摘がありました。
 ${issues}
 
+指摘された設問 (JSON):
+${JSON.stringify({ passages: acc.passages.filter(p => passageIds.has(p.id)), questions: targets })}
+
+それ以外の設問の一覧 (重複を避けるための参考。出力しない):
+${JSON.stringify(acc.questions.filter(q => !flagged.has(q.number)).map(q => ({ number: q.number, domain: q.domain, topic: q.topic, stem: q.stem.slice(0, 60) })))}
+
 指摘された設問だけを修正 (必要なら同じ number で差し替え) して出力してください。指摘のない設問は出力しないでください。
 資料文を直す場合は同じ id で passages に含めてください。出力は passages / questions / designNotes の JSON のみ。`,
-        {
-          structuredOutput: { schema: revisionSchema, jsonPromptInjection: true },
-          maxSteps: 60,
-          modelSettings: { maxOutputTokens: 32000 },
-          providerOptions: anthropicOptions(config.generateEffort),
-        },
-        { progress },
-      )
-      notes.push(...applyRevision(acc, revisionSchema.parse(raw)))
-      review = await runReview()
+          {
+            structuredOutput: { schema: revisionSchema, jsonPromptInjection: true },
+            maxSteps: 60,
+            // 思考トークンも上限に含まれるため、出力 (~1.5 万) + 思考の余裕を取る
+            modelSettings: { maxOutputTokens: 64000 },
+            providerOptions: anthropicOptions(config.generateEffort),
+          },
+          { progress },
+        )
+        notes.push(...applyRevision(acc, revisionSchema.parse(raw)))
+        await persistDraft('draft', [`改訂 ${revisions} 回目を反映`])
+      } catch (err) {
+        notes.push(`改訂 ${revisions} 回目に失敗したため、校閲前の内容のまま管理者確認に回します: ${err instanceof Error ? err.message : String(err)}`)
+        break
+      }
+      review = await runReviewSafely()
     }
 
     const generated = generatedExamSchema.parse({
@@ -161,7 +204,22 @@ ${issues}
       designNotes: acc.designNotes.join('\n'),
       notes,
     })
-    return { input: inputData, generated, review, revisions, layout, referenceExamId: reference?.id }
+    return { input: inputData, examId, generated, review, revisions, layout, referenceExamId: reference?.id }
+
+    async function runReviewSafely() {
+      try {
+        return await runReview()
+      } catch (err) {
+        const message = `校閲に失敗したため未校閲のまま管理者確認に回します: ${err instanceof Error ? err.message : String(err)}`
+        notes.push(message)
+        return reviewResultSchema.parse({
+          overallScore: 0,
+          approved: false,
+          issues: [{ severity: 'major', category: 'その他', message }],
+          coverage: { domainCoverage: '未評価', difficultyCoverage: '未評価', patternCoverage: '未評価' },
+        })
+      }
+    }
 
     async function runReview() {
       await progress.setPhase('校閲中 (要件定義と過去問に照らして検査)')
@@ -207,7 +265,8 @@ const saveDraftStep = createStep({
       layout: inputData.layout,
       extractionNotes: [`generated from spec ${inputData.input.specId}`, ...inputData.generated.notes, inputData.generated.designNotes].filter(Boolean),
     })
-    const rec = await saveExam({ kind: 'predicted', exam, status: 'review', specId: inputData.input.specId })
+    // 生成中にバッチごとに保存してきた下書き (examId) を最終内容で更新し、承認待ちにする
+    const rec = await saveExam({ id: inputData.examId, kind: 'predicted', exam, status: 'review', specId: inputData.input.specId })
     return {
       examId: rec.id,
       title: rec.title,
