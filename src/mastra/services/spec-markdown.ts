@@ -20,6 +20,16 @@ export function specToMarkdown(spec: ExamSpec, specId?: string): string {
   lines.push(`| 選択肢の文体 | ${spec.format.choiceStyle} |`)
   if (spec.format.numberingNotes) lines.push(`| 番号付け | ${spec.format.numberingNotes} |`)
 
+  if (spec.format.sections.length) {
+    lines.push(`\n## 大問構成 (大問の数・小問数は厳守)\n`)
+    lines.push(`| 大問 | 小問数 | 指示文 | 分野 | 共通資料文 | 特徴 |\n|---|---|---|---|---|---|`)
+    for (const s of [...spec.format.sections].sort((a, b) => a.number - b.number)) {
+      lines.push(
+        `| ${s.title || `第${s.number}問`} | ${s.questionCount} | ${s.instruction ?? ''} | ${s.domains.join(', ')} | ${s.sharedPassage ? 'あり' : ''} | ${s.notes ?? ''} |`,
+      )
+    }
+  }
+
   lines.push(`\n## 分野構成と出題比率\n`)
   for (const d of spec.domains) {
     lines.push(`### ${d.domain} — ${pct(d.share)} (約 ${d.expectedCount} 問)\n`)

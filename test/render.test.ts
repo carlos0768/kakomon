@@ -39,11 +39,34 @@ describe('renderExamHtml', () => {
     expect(renderExamHtml(makeExam(), { webFonts: true })).toContain('family=Noto+Sans+JP')
   })
 
-    it('formats labels per style', () => {
+  it('prints each section heading and instruction once before its first question', () => {
+    const exam = makeExam({ sections: [{ number: 1, title: '第1問', instruction: '次の各問いに答えよ。' }, { number: 2, title: '第2問' }] })
+    exam.questions[0]!.section = 1
+    exam.questions[1]!.section = 1
+    exam.questions[2]!.section = 2
+    const html = renderExamHtml(exam)
+    expect(html.split('class="section-head"').length - 1).toBe(2)
+    expect(html.indexOf('次の各問いに答えよ。')).toBeLessThan(html.indexOf('id="q1"'))
+    expect(html.indexOf('id="q2"')).toBeLessThan(html.indexOf('id="s2"'))
+    expect(html.indexOf('id="s2"')).toBeLessThan(html.indexOf('id="q3"'))
+  })
+
+  it('formats labels per style', () => {
     expect(formatChoiceLabel('3', 'katakana')).toBe('ウ')
     expect(formatChoiceLabel('2', 'alpha-upper')).toBe('B')
     expect(formatChoiceLabel('4', 'paren-digit')).toBe('(4)')
     expect(formatChoiceLabel('ア', 'circled-digit')).toBe('ア') // 非数値はそのまま
     expect(formatQuestionNumber(7, '第{n}問')).toBe('第7問')
+  })
+})
+
+describe('renderExamHtml titleSuffix', () => {
+  it('marks questions and answers files differently', () => {
+    const q = renderExamHtml(makeExam(), { titleSuffix: '【問題】' })
+    const a = renderExamHtml(makeExam(), { withAnswers: true, titleSuffix: '【解答・解説】' })
+    expect(q).toContain('【問題】')
+    expect(q).not.toContain('正解:')
+    expect(a).toContain('【解答・解説】')
+    expect(a).toContain('正解:')
   })
 })

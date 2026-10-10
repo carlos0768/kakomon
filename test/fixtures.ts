@@ -29,6 +29,7 @@ export function makeExam(over: Partial<ExtractedExam> = {}): ExtractedExam {
     session: '第1回',
     instructions: ['各問に最も適切なものを 1 つ選べ'],
     passages: [],
+    sections: [],
     questions: [
       makeQuestion({ number: 1 }),
       makeQuestion({ number: 2, domain: '技術', topic: '計算', questionType: '計算', correctLabel: '3' }),
@@ -57,7 +58,7 @@ export function makeSpec(over: Partial<ExamSpec> = {}): ExamSpec {
     specVersion: 1,
     title: 'サンプル試験',
     summary: '法規と技術が半々',
-    format: { questionCount: 3, choicesPerQuestion: 4, answerMode: 'single', stemStyle: '常体', choiceStyle: '短文' },
+    format: { questionCount: 3, choicesPerQuestion: 4, answerMode: 'single', stemStyle: '常体', choiceStyle: '短文', sections: [] },
     domains: [
       { domain: '法規', share: 0.4, expectedCount: 1, topics: [{ topic: '安全管理', share: 1, keywords: [], pastReferences: [], trend: '横ばい' }] },
       {

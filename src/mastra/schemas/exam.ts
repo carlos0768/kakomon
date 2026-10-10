@@ -22,8 +22,18 @@ export const passageSchema = z.object({
 })
 export type Passage = z.infer<typeof passageSchema>
 
+/** 大問の見出しと指示文 (例: 「第1問 次の各問いに答えよ」)。設問側は section で所属を示す */
+export const sectionSchema = z.object({
+  number: z.number().int().min(1).describe('大問番号 (第1問 = 1)'),
+  title: z.string().optional().describe('大問の見出し。原本の表記のまま (例: "第1問", "Ⅰ")'),
+  instruction: z.string().optional().describe('大問の冒頭の指示文 (例: "次の各問いに答えよ。")'),
+})
+export type Section = z.infer<typeof sectionSchema>
+
 export const questionSchema = z.object({
-  number: z.number().int().describe('大問/設問番号 (通し)'),
+  number: z.number().int().describe('設問番号 (試験全体の通し番号)'),
+  /** 大問のある試験で、この設問 (小問) が属する大問の番号。大問の区切りがない試験では省略 */
+  section: z.number().int().min(1).optional().describe('所属する大問の番号 (sections の number)。大問の区切りがない試験は省略'),
   /** 共有資料文は passages に 1 回だけ置き、設問からは passageId で参照する (出力量を抑えるため) */
   passageId: z.string().optional().describe('参照する共有資料文の ID (passages の id)'),
   /** その設問だけが使う短い資料文。共有資料文は passageId を使う */
@@ -87,6 +97,8 @@ export const extractedExamSchema = z.object({
   instructions: z.array(z.string()).default([]).describe('受験上の注意・指示文'),
   /** 複数の設問で共有する資料文。長文は 1 回だけここに書く */
   passages: z.array(passageSchema).default([]).describe('複数の設問で共有する資料文 (1 回だけ記述)'),
+  /** 大問の見出しと指示文。大問の区切りがない試験は空 */
+  sections: z.array(sectionSchema).default([]).describe('大問の一覧 (見出し・指示文)。大問の区切りがない試験は空'),
   questions: z.array(questionSchema).min(1),
   layout: layoutProfileSchema,
   /** 抽出時に気づいた点 (判読不能な箇所など) */

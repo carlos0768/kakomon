@@ -6,9 +6,11 @@
  *   npm run admin -- solve   <examId>                  正解が無い過去問に AI 推定の正解と根拠を付ける
  *   npm run admin -- analyze [--exam-ids a,b] [--title T] [--focus "..."] [--spec-id ID]
  *   npm run admin -- generate --spec <specId> --title "..." [--ref <examId>] [--count N] [--instructions "..."] [--max-revisions N]
+ *   npm run admin -- edit    <examId> --prompt "..."     承認前の予想問題をプロンプトで編集する
  *   npm run admin -- approve <runId> [--reject] [--note "..."]
  *   npm run admin -- render  <examId> [--answers]        HTML/PDF を再生成
  *   npm run admin -- list    [exams|specs|users]
+ *   npm run admin -- delete  <examId>                 登録済みの過去問を削除する (要件定義は残る)
  *   npm run admin -- export-spec <specId> [--out path]   要件定義を Markdown で書き出す
  *   npm run admin -- user create <username> <password>   受験者アカウントを作る
  *   npm run admin -- user reset-password <username> <newPassword>   パスワードを再設定 (忘れたとき)
@@ -22,6 +24,8 @@ import { adminApprovalStep } from '../mastra/workflows/generate-exam.workflow.ts
 import { specToMarkdown } from '../mastra/services/spec-markdown.ts'
 import { listUsers, registerUser, resetPassword } from '../mastra/services/auth.ts'
 import { streamObject } from '../mastra/services/llm.ts'
+import { editExamWithPrompt } from '../mastra/services/exam-edit.ts'
+import { deleteBlockReason, deletePastExam } from '../mastra/services/exam-delete.ts'
 import { z } from 'zod'
 
 const [, , command, ...rest] = process.argv
@@ -155,6 +159,14 @@ async function main() {
       }
       break
     }
+    case 'edit': {
+      const examId = positional[0]
+      const prompt = str('prompt')
+      if (!examId || !prompt) throw new Error('usage: edit <examId> --prompt "..."')
+      console.log(JSON.stringify(await editExamWithPrompt(mastra, examId, prompt), null, 2))
+      console.error(`\n解答付きプレビュー: data/out/${examId}-answers.html`)
+      break
+    }
     case 'approve': {
       const runId = positional[0]
       if (!runId) throw new Error('usage: approve <runId> [--reject] [--note "..."]')
@@ -180,6 +192,17 @@ async function main() {
       } else {
         for (const e of await listExams()) console.log(`${e.id}\t${e.kind}\t${e.status}\t${e.year ?? '-'}\t${e.title}\t${e.exam.questions.length}問`)
       }
+      break
+    }
+    case 'delete': {
+      const examId = positional[0]
+      if (!examId) throw new Error('usage: delete <examId>')
+      const blocked = await deleteBlockReason(examId)
+      if (blocked) throw new Error(blocked)
+      const res = await deletePastExam(examId)
+      if (!res) throw new Error(`exam not found: ${examId}`)
+      console.log(JSON.stringify(res, null, 2))
+      if (res.specIds.length) console.error(`\nこの過去問を元にした要件定義 (${res.specIds.join(', ')}) は残っています。必要なら analyze をやり直してください`)
       break
     }
     case 'export-spec': {
@@ -215,7 +238,7 @@ async function main() {
 }
 
 function usage() {
-  return `commands: ingest | solve | analyze | generate | approve | render | list | export-spec | user`
+  return `commands: ingest | solve | analyze | generate | edit | approve | render | list | export-spec | user`
 }
 
 main().catch(err => {
