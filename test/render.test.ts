@@ -34,7 +34,12 @@ describe('renderExamHtml', () => {
     expect(html).toContain('問3 だけの短い資料')
   })
 
-  it('formats labels per style', () => {
+  it('loads Japanese web fonts only when requested (for PDF on Vercel, whose Chromium has no CJK fonts)', () => {
+    expect(renderExamHtml(makeExam())).not.toContain('fonts.googleapis.com')
+    expect(renderExamHtml(makeExam(), { webFonts: true })).toContain('family=Noto+Sans+JP')
+  })
+
+    it('formats labels per style', () => {
     expect(formatChoiceLabel('3', 'katakana')).toBe('ウ')
     expect(formatChoiceLabel('2', 'alpha-upper')).toBe('B')
     expect(formatChoiceLabel('4', 'paren-digit')).toBe('(4)')
