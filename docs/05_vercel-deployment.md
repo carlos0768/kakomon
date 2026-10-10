@@ -12,7 +12,7 @@ Vercel のフレームワーク一覧で **Mastra** を選んでインポート�
 
 Vercel 上の管理画面では取り込み・分析・作問・正解推定の**ボタンは無効化**されている (API も 400 を返す)。サーバレス関数は応答を返した直後に止まるため、バックグラウンドのジョブは「実行中」の記録だけ残して途中で死ぬ。**重い作業は手元の `npm run dev` で開いた管理画面から行う** (同じ Supabase を見ているので結果はそのままサイトに出る)。承認・公開切替・ユーザー管理は Vercel 上の管理画面でできる。15 分以上進捗の無い「実行中」ジョブは、次にジョブ一覧を開いたときに自動で失敗扱いになる。
 
-Vercel 上では **PDF 生成はできない** (Chromium が無い)。受験者には `/kakomon/exams/:id/print` の HTML 版を配信し、PDF が必要なら手元で `npm run admin -- render <examId>` を実行する。`ingest` もローカルのファイルパスを読むので手元で実行する。
+Vercel 上でも **PDF はその場で生成できる** (`/kakomon/exams/:id/pdf`、管理画面の PDF ボタン)。Chromium 本体 (約 70MB) は関数に同梱すると Vercel の上限 250MB を超えるので、`@sparticuz/chromium-min` が初回起動時に GitHub Releases から `/tmp` に取得する (コールドスタート時だけ数秒余計にかかる。取得元は `KAKOMON_CHROMIUM_PACK_URL` で変えられる)。和文フォントは Google Fonts から読み込む。受験者向け PDF は CDN に 10 分キャッシュされる。`ingest` はローカルのファイルパスを読むので手元で実行する。
 
 ## 1. Supabase プロジェクトと接続文字列
 

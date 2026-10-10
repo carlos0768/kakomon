@@ -29,7 +29,9 @@ import { PreflightError, preflightModel } from '../services/preflight.ts'
 import { listUsers, resetPassword } from '../services/auth.ts'
 import { getSpec } from '../db/repo.ts'
 import { specToMarkdown } from '../services/spec-markdown.ts'
-import { renderExamHtml } from '../render/html.ts'
+import { escapeHtml, renderExamHtml } from '../render/html.ts'
+import { examPdfFileName, renderExamPdf } from '../render/pdf.ts'
+import type { ExamRecord } from '../db/repo.ts'
 import { deleteBlockReason, deletePastExam } from '../services/exam-delete.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -58,6 +60,32 @@ async function saveUpload(file: File, prefix?: string): Promise<string> {
 async function findAnswerJob(examId: string) {
   const sameExam = (j: { input: unknown }) => (j.input as { examId?: string }).examId === examId
   return (await findRunningJob('solve', sameExam)) ?? (await findRunningJob('answers', sameExam))
+}
+
+/**
+ * 試験を PDF で返す。Chromium が無い/起動できない環境では、理由と HTML 版へのリンクを 503 で返す。
+ * 生成は毎回数秒かかるので、公開 PDF は Vercel の CDN に短時間キャッシュさせる (cacheSeconds)。
+ */
+async function examPdfResponse(rec: ExamRecord, opts: { withAnswers?: boolean; cacheSeconds?: number; fallbackHtmlUrl: string }): Promise<Response> {
+  try {
+    const pdf = await renderExamPdf(rec.exam, { withAnswers: opts.withAnswers })
+    return new Response(new Uint8Array(pdf), {
+      headers: {
+        'content-type': 'application/pdf',
+        'content-disposition': `inline; filename="${examPdfFileName(rec.id, opts)}"`,
+        'cache-control': opts.cacheSeconds ? `public, max-age=0, s-maxage=${opts.cacheSeconds}` : 'private, no-store',
+      },
+    })
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    console.error(`[kakomon] PDF 生成に失敗しました (${rec.id}): ${reason}`)
+    return new Response(
+      `<!doctype html><meta charset="utf-8"><title>PDF を生成できませんでした</title>` +
+        `<p>PDF を生成できませんでした: ${escapeHtml(reason)}</p>` +
+        `<p><a href="${escapeHtml(opts.fallbackHtmlUrl)}">印刷用 HTML を開く</a> (ブラウザの印刷から「PDF として保存」もできます)</p>`,
+      { status: 503, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } },
+    )
+  }
 }
 
 /**
@@ -253,6 +281,7 @@ export const apiRoutes = [
         layout: rec.exam.layout,
         questions: rec.exam.questions.map(q => toPublicQuestion(q, rec.exam.passages)),
         printableHtmlUrl: `/kakomon/exams/${rec.id}/print`,
+        pdfUrl: `/kakomon/exams/${rec.id}/pdf`,
       })
     },
   }),
@@ -266,6 +295,17 @@ export const apiRoutes = [
       if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
       const { renderExamHtml } = await import('../render/html.ts')
       return c.html(renderExamHtml(rec.exam))
+    },
+  }),
+
+  // ---- 問題用紙の PDF (正解なし) ----
+  registerApiRoute('/kakomon/exams/:examId/pdf', {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
+      return examPdfResponse(rec, { cacheSeconds: 600, fallbackHtmlUrl: `/kakomon/exams/${rec.id}/print` })
     },
   }),
 
@@ -436,6 +476,17 @@ export const apiRoutes = [
       const rec = await getExam(c.req.param('examId'))
       if (!rec) return c.text('not found', 404)
       return c.html(renderExamHtml(rec.exam, { withAnswers: c.req.query('answers') !== '0' }))
+    },
+  }),
+  // 下書きも含めて PDF で確認・配布する (既定は正解つき、?answers=0 で問題用紙のみ)
+  registerApiRoute('/kakomon/admin/exams/:examId/pdf', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec) return c.text('not found', 404)
+      const withAnswers = c.req.query('answers') !== '0'
+      return examPdfResponse(rec, { withAnswers, fallbackHtmlUrl: `/kakomon/admin/exams/${rec.id}/preview${withAnswers ? '' : '?answers=0'}` })
     },
   }),
   // 問題 (kind=questions) と解答・解説 (kind=answers) を別ファイルでダウンロード

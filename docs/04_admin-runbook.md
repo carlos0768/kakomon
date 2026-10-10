@@ -22,7 +22,7 @@ npm run dev              # http://localhost:4111/kakomon/admin を開く
 |---|---|
 | 1. 過去問 | PDF を選んで「アップロードして取り込む」。「ジョブ」が success になると一覧に設問数と正解の有無が出る。正解が足りなければ「正解を推定」 |
 | 2. 要件定義 | 分析する過去問をチェックして「分析を実行」。チェックした過去問だけが対象になり、別の試験の過去問が登録されていても混ざらない。できた要件定義は「内容を見る」で確認し、一覧の「対象の過去問」で何年度分から作ったかが分かる。違和感があれば追加指示を入れて再実行 |
-| 3. 予想問題 | 要件定義とタイトルを選んで「作問を開始」。承認待ちになったら「内容を確認 (正解つき)」→ 直したい点があれば「プロンプトで編集」に指示を書いて「編集を実行」→「承認して公開」または「却下」。公開/非公開の切替もここ |
+| 3. 予想問題 | 要件定義とタイトルを選んで「作問を開始」。承認待ちになったら「内容を確認 (正解つき)」→ 直したい点があれば「プロンプトで編集」に指示を書いて「編集を実行」→「承認して公開」または「却下」。公開/非公開の切替もここ。「PDF (問題)」「PDF (正解つき)」で印刷・配布用の PDF を開ける (下書きでも可)。受験者は一覧の「印刷用 PDF」から問題用紙の PDF を開ける |
 | ジョブ | 取り込み・分析・作問・正解推定・編集の進行状況と結果。実行中は経過時間・段階・モデルの出力文字数が 5 秒ごとに更新される。失敗時はエラー内容が出る |
 
 ### 取り込みにかかる時間と進み方
@@ -220,7 +220,8 @@ Vercel に載せる場合は `docs/05_vercel-deployment.md` を参照 (Supabase 
 ## 8. よくある質問
 
 - **Studio と CLI で DB が別になる** → `KAKOMON_DB_URL` を絶対パス (`file:/abs/path/kakomon.db`) にする。
-- **PDF が出ない** → `playwright-core` と Chromium が必要。`pdfSkippedReason` に理由が入る。HTML は常に出る。`KAKOMON_CHROMIUM_PATH` で既存の Chrome を指せる。
+- **PDF が出ない** → `playwright-core` と Chromium が必要。`pdfSkippedReason` に理由が入る。HTML は常に出る。`KAKOMON_CHROMIUM_PATH` で既存の Chrome を指せる。画面の PDF ボタンでは理由つきの 503 ページが出る。
+- **PDF の文字が豆腐 (□) になる** → 和文フォントは Google Fonts (Noto Sans JP / Noto Serif JP) から読み込んでいる。生成するサーバから `fonts.googleapis.com` / `fonts.gstatic.com` に届くか確認する。
 - **生成が要件から外れる** → `docs/specs/<specId>.md` の分野名・比率・mustNot を見直し、`--instructions` で補足を渡す。校閲の `issues` を読むと原因が分かる。
 - **弱点分析ができない** → 同じアカウントで 2 回以上提出が必要。
 - **受験者がパスワードを忘れた** → `npm run admin -- user reset-password <username> <newPassword>`。

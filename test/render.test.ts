@@ -34,6 +34,11 @@ describe('renderExamHtml', () => {
     expect(html).toContain('問3 だけの短い資料')
   })
 
+  it('loads Japanese web fonts only when requested (for PDF on Vercel, whose Chromium has no CJK fonts)', () => {
+    expect(renderExamHtml(makeExam())).not.toContain('fonts.googleapis.com')
+    expect(renderExamHtml(makeExam(), { webFonts: true })).toContain('family=Noto+Sans+JP')
+  })
+
   it('prints each section heading and instruction once before its first question', () => {
     const exam = makeExam({ sections: [{ number: 1, title: '第1問', instruction: '次の各問いに答えよ。' }, { number: 2, title: '第2問' }] })
     exam.questions[0]!.section = 1

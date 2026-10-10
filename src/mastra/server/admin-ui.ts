@@ -326,15 +326,17 @@ function renderDrafts() {
   if (pending.length) html += '<h3>承認待ち</h3>' + pending.map(j => { const s = j.suspend || {}; return '<div class="card"><strong>' + esc(s.title || j.title) + '</strong> ' + tag('suspended')
     + '<div class="muted">' + s.questionCount + ' 問 / 校閲スコア ' + s.reviewScore + ' / blocker ' + s.blockerCount + ' 件 / 校閲判定: ' + (s.reviewApproved ? '合格' : '要確認') + '</div>'
     + '<div class="row" style="margin-top:6px"><button class="secondary" onclick="previewExam(\\'' + s.examId + '\\')">内容を確認 (正解つき)</button>'
+    + '<button class="secondary" onclick="pdfExam(\\'' + s.examId + '\\', true)">PDF (正解つき)</button>'
     + '<button class="secondary" onclick="startEdit(\\'' + s.examId + '\\')">プロンプトで編集</button>'
     + '<button data-act="decide:' + j.id + '" onclick="decide(\\'' + j.id + '\\', true)">承認して公開</button><button class="danger" data-act="decide:' + j.id + '" onclick="decide(\\'' + j.id + '\\', false)">却下</button></div></div>'; }).join('');
   html += '<h3>予想問題</h3>' + (predicted.length ? '<table><tr><th>タイトル</th><th>設問</th><th>状態</th><th></th></tr>' + predicted.map(e =>
     '<tr><td>' + esc(e.title) + '</td><td>' + e.questionCount + '</td><td>' + tag(e.status) + '</td><td class="row">'
     + '<button class="secondary" onclick="previewExam(\\'' + e.examId + '\\')">確認</button>'
     + (e.status !== 'published' ? '<button class="secondary" onclick="startEdit(\\'' + e.examId + '\\')">編集</button>' : '')
+    + '<button class="secondary" onclick="pdfExam(\\'' + e.examId + '\\', false)">PDF (問題)</button><button class="secondary" onclick="pdfExam(\\'' + e.examId + '\\', true)">PDF (正解つき)</button>'
     + '<button class="secondary" onclick="downloadExam(\\'' + e.examId + '\\',\\'questions\\')">問題DL</button>'
     + '<button class="secondary" onclick="downloadExam(\\'' + e.examId + '\\',\\'answers\\')">解答DL</button>'
-    + (e.status === 'published' ? '<a class="muted" href="/kakomon/exams/' + e.examId + '/print" target="_blank">受験者向け表示</a><button class="secondary" data-act="status:' + e.examId + '" onclick="setStatus(\\'' + e.examId + '\\',\\'archived\\')">非公開にする</button>'
+    + (e.status === 'published' ? '<a class="muted" href="/kakomon/exams/' + e.examId + '/pdf" target="_blank">受験者向け PDF</a><button class="secondary" data-act="status:' + e.examId + '" onclick="setStatus(\\'' + e.examId + '\\',\\'archived\\')">非公開にする</button>'
       : (e.status === 'archived' || e.status === 'review') ? '<button data-act="status:' + e.examId + '" onclick="setStatus(\\'' + e.examId + '\\',\\'published\\')">公開する</button>' : '')
     + '</td></tr>').join('') + '</table>' : '<p class="muted">まだありません。</p>');
   $('#draftList').innerHTML = html;
@@ -345,6 +347,13 @@ function renderDrafts() {
   if (selected && editable.some(e => e.examId === selected)) $('#editExam').value = selected;
   syncBusy();
 }
+// PDF もトークン付きで取得する。ポップアップブロックを避けるため、先にタブを開いてから中身を差し込む
+window.pdfExam = async (id, withAnswers) => {
+  const w = window.open('', '_blank'); w.document.write('<p>PDF を生成しています…</p>');
+  const r = await fetch('/kakomon/admin/exams/' + id + '/pdf' + (withAnswers ? '' : '?answers=0'), { headers: headers() });
+  if (!r.ok) { const html = await r.text(); w.document.open(); w.document.write(html); w.document.close(); return; }
+  w.location.href = URL.createObjectURL(await r.blob());
+};
 window.startEdit = examId => { $('#editExam').value = examId; $('#editBox').scrollIntoView({ behavior: 'smooth' }); $('#editPrompt').focus(); };
 $('#editBtn').onclick = () => act('edit', async () => {
   $('#editErr').textContent = '';

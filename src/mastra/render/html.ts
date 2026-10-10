@@ -53,9 +53,18 @@ function nl2br(s: string): string {
 export interface RenderOptions {
   /** 正解・解説を含める (管理者用/解答編) */
   withAnswers?: boolean
+  /**
+   * 和文フォント (Noto Sans JP / Noto Serif JP) を Google Fonts から読み込む。
+   * PDF 化で使う。Vercel の Chromium には日本語フォントが入っていないので、これが無いと文字化けする
+   */
+  webFonts?: boolean
   /** タイトル・ヘッダに付ける区別用の接尾辞 (例: 「【解答・解説】」) */
   titleSuffix?: string
 }
+
+const WEB_FONTS_HTML =
+  '<link rel="preconnect" href="https://fonts.googleapis.com">\n<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n' +
+  '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&family=Noto+Serif+JP:wght@400;700&display=block">\n'
 
 export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): string {
   const L = exam.layout
@@ -89,7 +98,7 @@ export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): s
 <head>
 <meta charset="utf-8">
 <title>${escapeHtml(exam.title + suffix)}</title>
-<style>
+${opts.webFonts ? WEB_FONTS_HTML : ''}<style>
   @page { size: ${pageSize}; margin: 18mm 16mm; }
   html, body { margin: 0; padding: 0; }
   body {

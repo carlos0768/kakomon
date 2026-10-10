@@ -57,6 +57,9 @@ export const mastra = new Mastra({
       : new LibSQLStore({ id: 'kakomon-storage', url: config.dbUrl, authToken: config.dbAuthToken }),
   vectors: { kakomonVector: vectorStore },
   deployer,
+  // PDF 生成用の playwright-core と @sparticuz/chromium-min (Vercel 用) は動的 import するので、
+  // バンドルせず関数の node_modules にそのまま入れる
+  bundler: { externals: ['playwright-core', '@sparticuz/chromium-min'], dynamicPackages: ['playwright-core', '@sparticuz/chromium-min'] },
   server: {
     auth,
     apiRoutes,

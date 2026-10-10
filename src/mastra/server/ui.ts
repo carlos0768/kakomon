@@ -109,7 +109,7 @@ async function loadExams() {
     const { exams } = await api('/kakomon/exams');
     $('#list').innerHTML = '<div class="card"><h2>公開中の予想問題</h2>' + (exams.length ? exams.map(e =>
       '<div class="q"><strong>' + esc(e.title) + '</strong> <span class="muted">' + e.questionCount + '問' + (e.timeLimitMinutes ? ' / ' + e.timeLimitMinutes + '分' : '') + '</span> '
-      + '<button data-id="' + e.examId + '">受験する</button> <a class="muted" href="/kakomon/exams/' + e.examId + '/print" target="_blank">印刷用</a> <a class="muted" href="/kakomon/exams/' + e.examId + '/download">問題をダウンロード</a></div>').join('') : '<p class="muted">公開中の問題はありません (管理者が生成・承認すると表示されます)</p>') + '</div>';
+      + '<button data-id="' + e.examId + '">受験する</button> <a class="muted" href="/kakomon/exams/' + e.examId + '/pdf" target="_blank">印刷用 PDF</a> <a class="muted" href="/kakomon/exams/' + e.examId + '/download">問題をダウンロード</a></div>').join('') : '<p class="muted">公開中の問題はありません (管理者が生成・承認すると表示されます)</p>') + '</div>';
     document.querySelectorAll('#list button[data-id]').forEach(b => b.onclick = () => startExam(b.dataset.id));
   } catch (e) { alert(e.message); }
 }
