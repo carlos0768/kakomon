@@ -1,5 +1,6 @@
 import type { Agent, AgentExecutionOptionsBase } from '@mastra/core/agent'
 import type { MessageListInput } from '@mastra/core/agent/message-list'
+import { JobCancelledError } from './job-progress.ts'
 
 /**
  * 長い出力を伴うエージェント呼び出しの共通ヘルパ。
@@ -13,6 +14,8 @@ import type { MessageListInput } from '@mastra/core/agent/message-list'
 export interface StreamProgress {
   /** 出力文字が増えたとき・ツールが呼ばれたときに呼ばれる (DB への書き込みは呼び出し側で間引く) */
   tick(deltaChars: number, note?: string): void
+  /** ジョブの停止シグナル。abort されたらモデル呼び出しを打ち切って JobCancelledError を投げる */
+  signal?: AbortSignal
 }
 
 /** structuredOutput 付きの stream オプション。スキーマの型は呼び出し側の parse に任せるので unknown */
@@ -28,7 +31,17 @@ export async function streamObject(
   options: StreamObjectOptions,
   hooks: { progress?: StreamProgress; onText?: (text: string) => void } = {},
 ): Promise<unknown> {
-  const stream = await agent.stream(messages, options as never)
+  const signal = hooks.progress?.signal
+  if (signal?.aborted) throw new JobCancelledError()
+  try {
+    return await consume(await agent.stream(messages, (signal ? { ...options, abortSignal: signal } : options) as never), hooks)
+  } catch (err) {
+    if (signal?.aborted) throw new JobCancelledError()
+    throw err
+  }
+}
+
+async function consume(stream: Awaited<ReturnType<Agent['stream']>>, hooks: { progress?: StreamProgress; onText?: (text: string) => void }): Promise<unknown> {
   let reasoningChars = 0
   for await (const chunk of stream.fullStream) {
     if (chunk.type === 'text-delta') {
@@ -47,6 +60,7 @@ export async function streamObject(
       hooks.progress?.tick(0)
     }
   }
+  if (hooks.progress?.signal?.aborted) throw new JobCancelledError()
   let obj: unknown
   try {
     obj = await stream.object

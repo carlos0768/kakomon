@@ -3,9 +3,9 @@ import { registerApiRoute } from '@mastra/core/server'
 import { z } from 'zod'
 import { config } from '../config.ts'
 import { ensureSchema, getDb } from '../db/client.ts'
-import { createAttempt, getAttempt, getExam, getWeaknessReport, listAttempts, listExams, listSpecs, updateExamStatus } from '../db/repo.ts'
+import { createAttempt, getAttempt, getExam, getWeaknessReport, listAttempts, listExams, listSpecs, renameExam, updateExamStatus } from '../db/repo.ts'
 import { answerSchema } from '../schemas/grading.ts'
-import { toPublicQuestion } from '../schemas/exam.ts'
+import { toPublicQuestion, type ExtractedExam } from '../schemas/exam.ts'
 import {
   AuthError,
   authenticate,
@@ -23,12 +23,16 @@ import { MIN_ATTEMPTS_FOR_WEAKNESS } from '../services/weakness.ts'
 import { adminApprovalStep } from '../workflows/generate-exam.workflow.ts'
 import { userUiHtml } from './ui.ts'
 import { adminUiHtml } from './admin-ui.ts'
-import { findRunningJob, getJob, listJobs, resumeGenerateJob, startSolveJob, startWorkflowJob } from '../services/jobs.ts'
+import { cancelJob, findRunningJob, getJob, JobStateError, listJobs, resumeGenerateJob, startAnswerKeyJob, startEditJob, startSolveJob, startWorkflowJob, withStartLock } from '../services/jobs.ts'
+import { editBlockReason } from '../services/exam-edit.ts'
 import { PreflightError, preflightModel } from '../services/preflight.ts'
 import { listUsers, resetPassword } from '../services/auth.ts'
 import { getSpec } from '../db/repo.ts'
 import { specToMarkdown } from '../services/spec-markdown.ts'
-import { renderExamHtml } from '../render/html.ts'
+import { escapeHtml, renderExamHtml } from '../render/html.ts'
+import { examPdfFileName, renderExamPdf } from '../render/pdf.ts'
+import type { ExamRecord } from '../db/repo.ts'
+import { deleteBlockReason, deletePastExam } from '../services/exam-delete.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -39,6 +43,50 @@ import { randomUUID } from 'node:crypto'
  * - /kakomon/admin/*  … 管理者向け (下書きの承認など)。KAKOMON_ADMIN_TOKEN があれば Bearer 認証。
  * 作問・分析そのものは Mastra 標準の /api/workflows/* (Studio) か CLI から実行する。
  */
+
+/** 連打などで同じ開始リクエストが同時に来たときの応答 */
+const STARTING = '同じ処理の開始を受け付けている途中です。数秒待ってからジョブ一覧を確認してください'
+
+/** アップロードされた PDF を uploadDir に保存してパスを返す */
+async function saveUpload(file: File, prefix?: string): Promise<string> {
+  await mkdir(config.uploadDir, { recursive: true })
+  const safeName = file.name.replace(/[^\w.\-\u3000-\u9fff]/g, '_')
+  const filePath = path.join(config.uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${prefix ? `${prefix}-` : ''}${safeName}`)
+  await writeFile(filePath, Buffer.from(await file.arrayBuffer()))
+  return filePath
+}
+
+/** 正解推定と正解インポートは同じ過去問を書き換えるので、どちらかが実行中なら始めない */
+async function findAnswerJob(examId: string) {
+  const sameExam = (j: { input: unknown }) => (j.input as { examId?: string }).examId === examId
+  return (await findRunningJob('solve', sameExam)) ?? (await findRunningJob('answers', sameExam))
+}
+
+/**
+ * 試験を PDF で返す。Chromium が無い/起動できない環境では、理由と HTML 版へのリンクを 503 で返す。
+ * 生成は毎回数秒かかるので、公開 PDF は Vercel の CDN に短時間キャッシュさせる (cacheSeconds)。
+ */
+async function examPdfResponse(rec: ExamRecord, opts: { withAnswers?: boolean; cacheSeconds?: number; fallbackHtmlUrl: string }): Promise<Response> {
+  try {
+    const pdf = await renderExamPdf(rec.exam, { withAnswers: opts.withAnswers })
+    return new Response(new Uint8Array(pdf), {
+      headers: {
+        'content-type': 'application/pdf',
+        'content-disposition': `inline; filename="${examPdfFileName(rec.id, opts)}"`,
+        'cache-control': opts.cacheSeconds ? `public, max-age=0, s-maxage=${opts.cacheSeconds}` : 'private, no-store',
+      },
+    })
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    console.error(`[kakomon] PDF 生成に失敗しました (${rec.id}): ${reason}`)
+    return new Response(
+      `<!doctype html><meta charset="utf-8"><title>PDF を生成できませんでした</title>` +
+        `<p>PDF を生成できませんでした: ${escapeHtml(reason)}</p>` +
+        `<p><a href="${escapeHtml(opts.fallbackHtmlUrl)}">印刷用 HTML を開く</a> (ブラウザの印刷から「PDF として保存」もできます)</p>`,
+      { status: 503, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } },
+    )
+  }
+}
 
 /**
  * ジョブ開始前の共通チェック。
@@ -86,6 +134,17 @@ const credentialsSchema = z.object({ username: z.string().min(1), password: z.st
 
 function publicUser(u: User) {
   return { userId: u.id, username: u.username }
+}
+
+/** 問題/解答を別ファイルの HTML としてダウンロードさせるレスポンス (印刷→PDF 保存もできる) */
+function downloadHtml(c: { header(k: string, v: string): void; body(b: string): Response }, exam: ExtractedExam, examId: string, kind: 'questions' | 'answers') {
+  const answers = kind === 'answers'
+  const html = renderExamHtml(exam, { withAnswers: answers, titleSuffix: answers ? '【解答・解説】' : '【問題】' })
+  const label = answers ? '解答' : '問題'
+  const name = `${exam.title}_${label}.html`
+  c.header('Content-Type', 'text/html; charset=utf-8')
+  c.header('Content-Disposition', `attachment; filename="${examId}-${kind}.html"; filename*=UTF-8''${encodeURIComponent(name)}`)
+  return c.body(html)
 }
 
 export const apiRoutes = [
@@ -222,6 +281,7 @@ export const apiRoutes = [
         layout: rec.exam.layout,
         questions: rec.exam.questions.map(q => toPublicQuestion(q, rec.exam.passages)),
         printableHtmlUrl: `/kakomon/exams/${rec.id}/print`,
+        pdfUrl: `/kakomon/exams/${rec.id}/pdf`,
       })
     },
   }),
@@ -235,6 +295,28 @@ export const apiRoutes = [
       if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
       const { renderExamHtml } = await import('../render/html.ts')
       return c.html(renderExamHtml(rec.exam))
+    },
+  }),
+
+  // ---- 問題用紙の PDF (正解なし) ----
+  registerApiRoute('/kakomon/exams/:examId/pdf', {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
+      return examPdfResponse(rec, { cacheSeconds: 600, fallbackHtmlUrl: `/kakomon/exams/${rec.id}/print` })
+    },
+  }),
+
+  // ---- 問題のダウンロード (正解は含まない。解答は管理者のみ) ----
+  registerApiRoute('/kakomon/exams/:examId/download', {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec || rec.kind !== 'predicted' || rec.status !== 'published') return c.text('not found', 404)
+      return downloadHtml(c, rec.exam, rec.id, 'questions')
     },
   }),
 
@@ -396,6 +478,27 @@ export const apiRoutes = [
       return c.html(renderExamHtml(rec.exam, { withAnswers: c.req.query('answers') !== '0' }))
     },
   }),
+  // 下書きも含めて PDF で確認・配布する (既定は正解つき、?answers=0 で問題用紙のみ)
+  registerApiRoute('/kakomon/admin/exams/:examId/pdf', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec) return c.text('not found', 404)
+      const withAnswers = c.req.query('answers') !== '0'
+      return examPdfResponse(rec, { withAnswers, fallbackHtmlUrl: `/kakomon/admin/exams/${rec.id}/preview${withAnswers ? '' : '?answers=0'}` })
+    },
+  }),
+  // 問題 (kind=questions) と解答・解説 (kind=answers) を別ファイルでダウンロード
+  registerApiRoute('/kakomon/admin/exams/:examId/download', {
+    method: 'GET',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec) return c.text('not found', 404)
+      return downloadHtml(c, rec.exam, rec.id, c.req.query('kind') === 'answers' ? 'answers' : 'questions')
+    },
+  }),
   registerApiRoute('/kakomon/admin/exams/:examId/status', {
     method: 'POST',
     middleware: [adminAuth],
@@ -406,17 +509,100 @@ export const apiRoutes = [
       return c.json({ ok: true })
     },
   }),
+  registerApiRoute('/kakomon/admin/exams/:examId/title', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z.object({ title: z.string().trim().min(1).max(200) }).safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: '試験名を入力してください (200 文字まで)' }, 400)
+      const examId = c.req.param('examId')
+      // 実行中のジョブは読み込んだ時点の内容 (旧名称) で保存し直すので、その間は変更を受け付けない
+      if ((await findAnswerJob(examId)) ?? (await findRunningJob('edit', j => (j.input as { examId?: string }).examId === examId)))
+        return c.json({ error: 'この試験の正解推定・正解インポート・編集が実行中です。終わってから名称を変更してください' }, 409)
+      const rec = await renameExam(examId, body.data.title)
+      return rec ? c.json({ ok: true, title: rec.title }) : c.json({ error: 'exam not found' }, 404)
+    },
+  }),
+  // 登録済みの過去問を削除する (設問・ベクトル索引・アップロードした PDF の控え)。要件定義は残す
+  registerApiRoute('/kakomon/admin/exams/:examId', {
+    method: 'DELETE',
+    middleware: [adminAuth],
+    handler: async c => {
+      const examId = c.req.param('examId')
+      // 正解推定・インポート・分析の開始と同時に来ても、どちらかを待たせる
+      const res = await withStartLock([`answers:${examId}`, 'analyze'], async () => {
+        const blocked = await deleteBlockReason(examId)
+        if (blocked) return c.json({ error: blocked }, 409)
+        try {
+          const result = await deletePastExam(examId)
+          return result ? c.json({ ok: true, ...result }) : c.json({ error: 'exam not found' }, 404)
+        } catch (err) {
+          return c.json({ error: err instanceof Error ? err.message : String(err) }, 400)
+        }
+      })
+      return res ?? c.json({ error: STARTING }, 409)
+    },
+  }),
   registerApiRoute('/kakomon/admin/exams/:examId/solve', {
     method: 'POST',
     middleware: [adminAuth],
     handler: async c => {
       const rec = await getExam(c.req.param('examId'))
       if (!rec) return c.json({ error: 'exam not found' }, 404)
-      if (await findRunningJob('solve', j => (j.input as { examId?: string }).examId === rec.id)) return c.json({ error: 'この過去問の正解推定はすでに実行中です' }, 409)
-      const pre = await preflightOr400(c)
-      if (pre) return pre
-      const job = await startSolveJob(c.get('mastra'), rec.id, `正解推定: ${rec.title}`)
-      return c.json({ job })
+      const res = await withStartLock([`answers:${rec.id}`], async () => {
+        if (await findAnswerJob(rec.id)) return c.json({ error: 'この過去問の正解推定・正解データのインポートがすでに実行中です' }, 409)
+        const pre = await preflightOr400(c)
+        if (pre) return pre
+        const job = await startSolveJob(c.get('mastra'), rec.id, `正解推定: ${rec.title}`)
+        return c.json({ job })
+      })
+      return res ?? c.json({ error: STARTING }, 409)
+    },
+  }),
+  // ---- 解答・解説 PDF のインポート → 正解データとして過去問に反映 ----
+  registerApiRoute('/kakomon/admin/exams/:examId/answers', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const rec = await getExam(c.req.param('examId'))
+      if (!rec) return c.json({ error: 'exam not found' }, 404)
+      const body = await c.req.parseBody()
+      const file = body['file']
+      if (!(file instanceof File)) return c.json({ error: '解答・解説の PDF ファイルを選択してください' }, 400)
+      if (file.size > config.maxUploadBytes) return c.json({ error: `PDF は ${Math.floor(config.maxUploadBytes / 1024 / 1024)}MB 以下にしてください` }, 400)
+      const res = await withStartLock([`answers:${rec.id}`], async () => {
+        if (await findAnswerJob(rec.id)) return c.json({ error: 'この過去問の正解推定・正解データのインポートがすでに実行中です' }, 409)
+        const pre = await preflightOr400(c)
+        if (pre) return pre
+        const filePath = await saveUpload(file, 'answers')
+        const job = await startAnswerKeyJob(c.get('mastra'), rec.id, filePath, `正解インポート: ${rec.title}${rec.exam.year ? ` (${rec.exam.year})` : ''}`)
+        return c.json({ job })
+      })
+      return res ?? c.json({ error: STARTING }, 409)
+    },
+  }),
+
+  // ---- 予想問題をプロンプトで編集 (公開前のみ) ----
+  registerApiRoute('/kakomon/admin/exams/:examId/edit', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      const body = z.object({ prompt: z.string().trim().min(1) }).safeParse(await c.req.json().catch(() => ({})))
+      if (!body.success) return c.json({ error: '編集の指示を入力してください' }, 400)
+      const rec = await getExam(c.req.param('examId'))
+      const blocked = editBlockReason(rec)
+      if (blocked || !rec) return c.json({ error: blocked }, rec ? 400 : 404)
+      const res = await withStartLock([`edit:${rec.id}`], async () => {
+        // 同じ予想問題への編集が重なると、後から終わった方が先の編集を上書きしてしまう
+        if (await findRunningJob('edit', j => (j.input as { examId?: string }).examId === rec.id)) return c.json({ error: 'この予想問題の編集はすでに実行中です。終わるまで待ってください' }, 409)
+        // 作問中の下書きは、作問ジョブがバッチごとに上書き保存するので編集を受け付けない
+        if (rec.status === 'draft' && (await findRunningJob('generate'))) return c.json({ error: '作問ジョブが実行中です。作問が終わって承認待ちになってから編集してください' }, 409)
+        const pre = await preflightOr400(c)
+        if (pre) return pre
+        const job = await startEditJob(c.get('mastra'), rec.id, body.data.prompt, `編集: ${rec.title}`)
+        return c.json({ job })
+      })
+      return res ?? c.json({ error: STARTING }, 409)
     },
   }),
 
@@ -431,32 +617,33 @@ export const apiRoutes = [
       if (file.size > config.maxUploadBytes) return c.json({ error: `PDF は ${Math.floor(config.maxUploadBytes / 1024 / 1024)}MB 以下にしてください` }, 400)
       const title0 = typeof body['title'] === 'string' && body['title'] ? body['title'] : undefined
       const year0 = typeof body['year'] === 'string' && body['year'] ? Number(body['year']) : undefined
-      // 同じ過去問 (同じファイル名、または同じ試験名+年度) の取り込みが走っていれば二重起動しない (費用が倍になる)
-      const dup = await findRunningJob('ingest', j => {
-        const input = j.input as { filePath?: string; title?: string; year?: number }
-        const sameFile = Boolean(input.filePath && path.basename(input.filePath).endsWith(file.name.replace(/[^\w.\-\u3000-\u9fff]/g, '_')))
-        const sameTitle = Boolean(title0 && input.title === title0 && (year0 ?? null) === (input.year ?? null))
-        return sameFile || sameTitle
-      })
-      if (dup) return c.json({ error: `同じ過去問の取り込みがすでに実行中です (${dup.title})。終わるまで待ってください` }, 409)
-      const pre = await preflightOr400(c)
-      if (pre) return pre
-      const uploadDir = config.uploadDir
-      await mkdir(uploadDir, { recursive: true })
       const safeName = file.name.replace(/[^\w.\-\u3000-\u9fff]/g, '_')
-      const filePath = path.join(uploadDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeName}`)
-      await writeFile(filePath, Buffer.from(await file.arrayBuffer()))
-      const title = title0
-      const year = year0
-      const session = typeof body['session'] === 'string' && body['session'] ? body['session'] : undefined
-      const job = await startWorkflowJob(c.get('mastra'), 'ingest', `取り込み: ${title ?? file.name}${year ? ` (${year})` : ''}`, {
-        filePath,
-        kind: 'past',
-        title,
-        year: Number.isFinite(year) ? year : undefined,
-        session,
+      const lockKeys = [`ingest:file:${safeName}`, ...(title0 ? [`ingest:title:${title0}:${year0 ?? ''}`] : [])]
+      const res = await withStartLock(lockKeys, async () => {
+        // 同じ過去問 (同じファイル名、または同じ試験名+年度) の取り込みが走っていれば二重起動しない (費用が倍になる)
+        const dup = await findRunningJob('ingest', j => {
+          const input = j.input as { filePath?: string; title?: string; year?: number }
+          const sameFile = Boolean(input.filePath && path.basename(input.filePath).endsWith(safeName))
+          const sameTitle = Boolean(title0 && input.title === title0 && (year0 ?? null) === (input.year ?? null))
+          return sameFile || sameTitle
+        })
+        if (dup) return c.json({ error: `同じ過去問の取り込みがすでに実行中です (${dup.title})。終わるまで待ってください` }, 409)
+        const pre = await preflightOr400(c)
+        if (pre) return pre
+        const filePath = await saveUpload(file)
+        const title = title0
+        const year = year0
+        const session = typeof body['session'] === 'string' && body['session'] ? body['session'] : undefined
+        const job = await startWorkflowJob(c.get('mastra'), 'ingest', `取り込み: ${title ?? file.name}${year ? ` (${year})` : ''}`, {
+          filePath,
+          kind: 'past',
+          title,
+          year: Number.isFinite(year) ? year : undefined,
+          session,
+        })
+        return c.json({ job })
       })
-      return c.json({ job })
+      return res ?? c.json({ error: STARTING }, 409)
     },
   }),
 
@@ -504,11 +691,14 @@ export const apiRoutes = [
         if (unknown.length) return c.json({ error: `分析対象の過去問が見つかりません: ${unknown.join(', ')}` }, 400)
         if (body.data.examIds.length === 0) return c.json({ error: '分析対象の過去問を 1 件以上選んでください' }, 400)
       }
-      if (await findRunningJob('analyze')) return c.json({ error: '傾向分析がすでに実行中です。終わるまで待ってください' }, 409)
-      const pre = await preflightOr400(c)
-      if (pre) return pre
-      const job = await startWorkflowJob(c.get('mastra'), 'analyze', `傾向分析${body.data.title ? `: ${body.data.title}` : ''}`, body.data)
-      return c.json({ job })
+      const res = await withStartLock(['analyze'], async () => {
+        if (await findRunningJob('analyze')) return c.json({ error: '傾向分析がすでに実行中です。終わるまで待ってください' }, 409)
+        const pre = await preflightOr400(c)
+        if (pre) return pre
+        const job = await startWorkflowJob(c.get('mastra'), 'analyze', `傾向分析${body.data.title ? `: ${body.data.title}` : ''}`, body.data)
+        return c.json({ job })
+      })
+      return res ?? c.json({ error: STARTING }, 409)
     },
   }),
 
@@ -528,10 +718,20 @@ export const apiRoutes = [
         })
         .safeParse(await c.req.json().catch(() => ({})))
       if (!body.success) return c.json({ error: body.error.issues }, 400)
-      const pre = await preflightOr400(c)
-      if (pre) return pre
-      const job = await startWorkflowJob(c.get('mastra'), 'generate', `作問: ${body.data.title}`, body.data)
-      return c.json({ job })
+      const { specId, title } = body.data
+      const res = await withStartLock([`generate:${specId}:${title}`], async () => {
+        // 同じ要件定義・同じタイトルの作問が走っていれば二重起動しない (費用が倍になる)
+        const dup = await findRunningJob('generate', j => {
+          const input = j.input as { specId?: string; title?: string }
+          return input.specId === specId && input.title === title
+        })
+        if (dup) return c.json({ error: `同じ作問がすでに実行中です (${dup.title})。終わるまで待つか、ジョブを停止してください` }, 409)
+        const pre = await preflightOr400(c)
+        if (pre) return pre
+        const job = await startWorkflowJob(c.get('mastra'), 'generate', `作問: ${title}`, body.data)
+        return c.json({ job })
+      })
+      return res ?? c.json({ error: STARTING }, 409)
     },
   }),
   registerApiRoute('/kakomon/admin/jobs', {
@@ -557,7 +757,20 @@ export const apiRoutes = [
         const job = await resumeGenerateJob(c.get('mastra'), c.req.param('jobId'), body.data)
         return c.json({ job })
       } catch (err) {
+        if (err instanceof JobStateError) return c.json({ error: err.message }, err.status)
         return c.json({ error: err instanceof Error ? err.message : String(err) }, 400)
+      }
+    },
+  }),
+  registerApiRoute('/kakomon/admin/jobs/:jobId/cancel', {
+    method: 'POST',
+    middleware: [adminAuth],
+    handler: async c => {
+      try {
+        return c.json({ job: await cancelJob(c.req.param('jobId')) })
+      } catch (err) {
+        if (err instanceof JobStateError) return c.json({ error: err.message }, err.status)
+        throw err
       }
     },
   }),

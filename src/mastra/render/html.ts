@@ -53,7 +53,18 @@ function nl2br(s: string): string {
 export interface RenderOptions {
   /** 正解・解説を含める (管理者用/解答編) */
   withAnswers?: boolean
+  /**
+   * 和文フォント (Noto Sans JP / Noto Serif JP) を Google Fonts から読み込む。
+   * PDF 化で使う。Vercel の Chromium には日本語フォントが入っていないので、これが無いと文字化けする
+   */
+  webFonts?: boolean
+  /** タイトル・ヘッダに付ける区別用の接尾辞 (例: 「【解答・解説】」) */
+  titleSuffix?: string
 }
+
+const WEB_FONTS_HTML =
+  '<link rel="preconnect" href="https://fonts.googleapis.com">\n<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n' +
+  '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&family=Noto+Serif+JP:wght@400;700&display=block">\n'
 
 export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): string {
   const L = exam.layout
@@ -64,25 +75,30 @@ export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): s
   const pageSize = `${PAPER[L.paperSize]}${L.orientation === 'landscape' ? ' landscape' : ''}`
   const vertical = L.writingMode === 'vertical'
 
+  // 大問の見出し・指示文は、その大問の最初の設問の前に印字する。
   // 共有資料文は、それを参照する最初の設問の前に 1 回だけ印字する (原本と同じ並び)
+  let prevSection: number | undefined
   let prevPassage: string | undefined
   const questionsHtml = exam.questions
     .map(q => {
+      const head = q.section !== undefined && q.section !== prevSection ? renderSectionHead(q.section, exam.sections) : ''
+      prevSection = q.section
       const passage = resolvePassage(q, exam.passages)
       const showPassage = Boolean(passage) && passage !== prevPassage
       prevPassage = passage
       const shared = q.passageId ? exam.passages.find(p => p.id === q.passageId) : undefined
-      return renderQuestion(q, L, opts, showPassage ? { text: passage!, title: shared?.title } : undefined)
+      return head + renderQuestion(q, L, opts, showPassage ? { text: passage!, title: shared?.title } : undefined)
     })
     .join('\n')
-  const header = L.headerText ?? [exam.title, exam.year ? `${exam.year}年度` : '', exam.session ?? ''].filter(Boolean).join('　')
+  const suffix = opts.titleSuffix ?? ''
+  const header = (L.headerText ?? [exam.title, exam.year ? `${exam.year}年度` : '', exam.session ?? ''].filter(Boolean).join('　')) + suffix
 
   return `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>${escapeHtml(exam.title)}</title>
-<style>
+<title>${escapeHtml(exam.title + suffix)}</title>
+${opts.webFonts ? WEB_FONTS_HTML : ''}<style>
   @page { size: ${pageSize}; margin: 18mm 16mm; }
   html, body { margin: 0; padding: 0; }
   body {
@@ -100,6 +116,8 @@ export function renderExamHtml(exam: ExtractedExam, opts: RenderOptions = {}): s
   .questions { column-count: ${L.columns}; column-gap: 8mm; ${L.columns > 1 ? 'column-rule: 1px solid #999;' : ''} }
   .q { break-inside: avoid; margin-bottom: 12pt; }
   .q .num { font-weight: bold; margin-${vertical ? 'bottom' : 'right'}: 0.5em; }
+  .section-head { break-after: avoid; margin: 14pt 0 6pt; }
+  .section-head .section-title { font-weight: bold; font-size: 110%; }
   .passage { border-left: 2px solid #666; padding-left: 8pt; margin: 6pt 0 8pt; white-space: pre-wrap; break-inside: avoid-column; }
   .passage-title { font-weight: bold; margin-bottom: 3pt; }
   .choices { margin: 4pt 0 0; padding: 0; list-style: none; }
@@ -127,6 +145,12 @@ ${L.footerText ? `<footer class="exam-footer">${escapeHtml(L.footerText)}</foote
 </div>
 </body>
 </html>`
+}
+
+function renderSectionHead(n: number, sections: ExtractedExam['sections']): string {
+  const s = sections.find(x => x.number === n)
+  const title = s?.title || `第${n}問`
+  return `<section class="section-head" id="s${n}"><div class="section-title">${escapeHtml(title)}</div>${s?.instruction ? `<div class="section-instruction">${nl2br(s.instruction)}</div>` : ''}</section>\n`
 }
 
 function renderQuestion(q: Question, L: LayoutProfile, opts: RenderOptions, passage?: { text: string; title?: string }): string {

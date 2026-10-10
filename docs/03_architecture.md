@@ -98,6 +98,7 @@ Mastra 標準の `/api/*` (agents / workflows / Studio) に加えて、独自ル
 | GET | `/kakomon/exams` | 公開中の予想問題一覧 |
 | GET | `/kakomon/exams/:examId` | 問題本文 (選択肢のラベル・本文のみ) |
 | GET | `/kakomon/exams/:examId/print` | 原本の見た目を再現した印刷用 HTML |
+| GET | `/kakomon/exams/:examId/pdf` | 同じ見た目の問題用紙 PDF (正解なし)。その場で Chromium で生成し、CDN に 10 分キャッシュ。生成できない環境では 503 と HTML 版へのリンク |
 | POST | `/kakomon/attempts` `{examId}` | 受験開始 (要ログイン) |
 | POST | `/kakomon/attempts/:id/submit` `{answers:[{questionNumber, selectedLabel}]}` | 提出 → 添削結果 (本人のみ) |
 | GET | `/kakomon/attempts/:id` | 添削結果の再取得 (本人のみ) |
@@ -113,6 +114,7 @@ Mastra 標準の `/api/*` (agents / workflows / Studio) に加えて、独自ル
 | GET | `/kakomon/admin/whoami` | トークン確認と環境情報 |
 | GET | `/kakomon/admin/exams` | 全試験 (状態・設問数・正解の有無) |
 | GET | `/kakomon/admin/exams/:examId/preview` | 正解・根拠つきプレビュー HTML (`?answers=0` で正解なし) |
+| GET | `/kakomon/admin/exams/:examId/pdf` | 下書きを含む PDF。既定は正解つき、`?answers=0` で問題用紙のみ |
 | POST | `/kakomon/admin/exams/:examId/status` `{status}` | 公開/非公開の切替 |
 | POST | `/kakomon/admin/exams/:examId/solve` | 正解推定ジョブを開始 |
 | POST | `/kakomon/admin/upload` (multipart: file, title, year, session) | PDF を保存して取り込みジョブを開始 |
@@ -130,7 +132,7 @@ Studio (`/api/workflows/*`) と CLI からも同じワークフローを起動�
 
 - **図版**: 図や表を含む設問の見た目再現は未対応 (テキストのみ)。
 - **認証**: 受験者はユーザー名 + パスワードの簡易アカウント (scrypt ハッシュ + Cookie セッション、メール不要、身内向け)。パスワードを忘れた場合は管理者が `npm run admin -- user reset-password` で再設定する。管理者側は `KAKOMON_ADMIN_TOKEN` による `SimpleAuth` で保護 (Studio・`/api/*`・`/kakomon/admin/*`)。
-- **デプロイ**: Vercel は `docs/05_vercel-deployment.md`。DB は Supabase (PostgreSQL)、PDF 生成と取り込みは手元の CLI。
+- **デプロイ**: Vercel は `docs/05_vercel-deployment.md`。DB は Supabase (PostgreSQL)、取り込みは手元の CLI。PDF は Vercel 上でもその場で生成する (`@sparticuz/chromium-min`)。
 - **UI**: `/kakomon` は参照実装。Next.js へ移す場合は `src/mastra` をそのまま置き、Route Handler から `mastra.getWorkflow(...)` を呼ぶ (Mastra 公式の Next.js ガイドに準拠)。
 - **ベクトル検索**: 既定は無効。過去問が数百問を超える、または言い回しの違う類題検出を強化したい場合に `EMBEDDING_MODEL` を設定する。
 - **コスト**: モデルの使い分けと概算は `docs/04_admin-runbook.md`「費用とモデルの使い分け」。
